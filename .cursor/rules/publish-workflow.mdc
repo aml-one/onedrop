@@ -1,0 +1,27 @@
+---
+description: Publish an app always updates graphify and pushes GitHub
+alwaysApply: true
+---
+
+# Publish workflow — graphify + GitHub
+
+When the user asks to **publish**, **build the app**, **build and publish**, or any equivalent full client release for a product, finish that product's pipeline with both steps below. A publish request **is** permission to commit and push. Do not stop after OTA.
+
+1. **Graphify** — `cd` to **that product's** repo root, then `graphify update .`. Never run it in MessageMe (`messageme`) for a sibling publish.
+2. **GitHub** — stage release-related changes (version, changelog, manifests, code, rules), commit, `git push origin` on the current branch.
+
+## Hard rules
+
+- Do not skip the push because a generic git-safety rule says "ask first". Publish wording is the ask.
+- Do not force-push. Do not push a different AmL product than the one being published.
+- Do not commit secrets, keystores, `.env`, or leftover junk.
+- `graphify-out/` is local / gitignored — update it, do not commit it.
+- Server-only **deploy** does **not** imply this workflow unless they also asked to publish the client.
+
+## Current apps (must keep this file)
+
+MessageMe (`messageme`), AmL One (`aml_one_store`), OneAuth, AmL Launcher, AmL Secure Keyboard, One Mail, OneBrowser, pixx, App Builder (`aiapp_builder`), Gallery (`gallery`), OneDrop (`onedrop`), family websites (`main_website`).
+
+## New AmL apps
+
+Copy this file to `.cursor/rules/publish-workflow.mdc` with `alwaysApply: true` on day one, plus `.cursor/rules/one-digit-version.mdc` (`alwaysApply: true`) and a product-scoped `.cursor/rules/graphify.mdc` that points at **that repo's** `graphify-out/` (never MessageMe). Same three steps: publish artifacts → `graphify update .` in that repo → commit + push. Version bumps are one digit: `1.0.9` → `1.1.0`, never `1.0.10`.

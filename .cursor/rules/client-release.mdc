@@ -1,0 +1,15 @@
+---
+description: Never build, publish, or OTA-deploy the OneDrop client without explicit user approval
+alwaysApply: true
+---
+
+# Client release approval
+
+**Never build, publish, or OTA-deploy the OneDrop client without the user
+explicitly asking in that conversation.**
+
+These requests **do not** authorize a client build: finishing a fix, changelog,
+or graphify.
+
+A **publish** / **build the app** request authorizes the full client pipeline
+plus `graphify update .` and a GitHub push.

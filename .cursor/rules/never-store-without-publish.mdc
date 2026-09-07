@@ -1,0 +1,44 @@
+---
+description: Never put any app on AmL One unless this chat said publish
+alwaysApply: true
+---
+
+# Never publish an app to AmL One without "publish"
+
+**HARD GATE.** Do not put any app on the AmL One store unless **this
+conversation** uses the word **publish** and clearly means **that app on
+AmL One** (the store / shelf / listing).
+
+Product OTA (`publish MessageMe`, `build the app`) is **not** permission
+to list that app on AmL One. A prior chat where they once said publish
+does not count.
+
+## Forbidden without that ask
+
+```
+❌ Add or restore a row in OFFICIAL_LISTINGS
+❌ Deploy AmL One so a new official app appears on Today
+❌ POST https://aml.one/api/publish/android (or any store publish API)
+❌ Community shelf upload
+❌ Listing an app after a sideload, APK build, or listing-copy draft
+```
+
+These do **not** authorize a store listing:
+
+```
+❌ put it on my phone / 17 Ultra
+❌ build the app / build the APK
+❌ deploy (servers)
+❌ prepare the listing / future listing
+```
+
+## Allowed
+
+```
+✅ "publish Gallery to the store" / "publish it on AmL One"
+✅ Changing copy of an app already on the shelf when they asked to change that copy
+✅ The user publishing from the AmL One or App Builder UI themselves
+```
+
+Copy this file to every new AmL app as `.cursor/rules/never-store-without-publish.mdc`
+with `alwaysApply: true`.

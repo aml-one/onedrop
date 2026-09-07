@@ -1,0 +1,22 @@
+---
+description: Graphify for OneDrop only — never MessageMe
+alwaysApply: true
+---
+
+# Graphify — OneDrop (`onedrop`)
+
+Use this graph **only** when the task is OneDrop. Never run `graphify` in
+MessageMe (`messageme`) for OneDrop work.
+
+Repo root: `C:\Users\ambru\source\repos\aml-systems\onedrop`
+
+```powershell
+Set-Location 'C:\Users\ambru\source\repos\aml-systems\onedrop'
+graphify query "<question>"
+graphify path "<A>" "<B>"
+graphify explain "<concept>"
+graphify update .
+```
+
+If `graphify-out/graph.json` is missing, run `graphify .` **here**. After
+OneDrop code changes: `graphify update .` from this root.

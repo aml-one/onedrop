@@ -1,0 +1,14 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=One Drop
+GenericName=File transfer
+Comment=Send and receive files over the same Wi-Fi
+Exec=onedrop
+Icon=one.aml.onedrop
+Terminal=false
+Categories=Network;FileTransfer;
+StartupNotify=false
+X-GNOME-Autostart-enabled=true
+# Prefer staying in the status area; the Flutter runner skips the taskbar.
+StartupWMClass=onedrop

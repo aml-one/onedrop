@@ -1,0 +1,38 @@
+---
+description: AmL One World (AOW) checkout path map
+alwaysApply: true
+---
+
+# AmL One World (AOW) path map
+
+The product world is **AmL One World** (short **AOW**). Do not write "AmL Family". Style: **AOW style**, **AmL One World style**, or **AmL World style**.
+
+**You are in OneDrop (`aml-systems\onedrop`)**. "Build the app" in this workspace means this product only.
+
+Absolute checkouts on this Windows machine:
+
+| Product | Path |
+|---|---|
+| MessageMe | `C:\Users\ambru\source\repos\aml-systems\messageme` |
+| OneAuth | `C:\Users\ambru\source\repos\aml-systems\oneauth` |
+| AmL Launcher | `C:\Users\ambru\source\repos\aml-systems\aml-launcher` |
+| AmL Secure Keyboard | `C:\Users\ambru\source\repos\aml-systems\aml-secure-keyboard` |
+| pixx | `C:\Users\ambru\source\repos\aml-systems\pixx` |
+| One Mail | `C:\Users\ambru\source\repos\aml-systems\one_mail` |
+| OneBrowser | `C:\Users\ambru\source\repos\aml-systems\one_browser` |
+| Gallery | `C:\Users\ambru\source\repos\aml-systems\gallery` |
+| **OneDrop** | `C:\Users\ambru\source\repos\aml-systems\onedrop` |
+| App Builder | `C:\Users\ambru\source\repos\aml-systems\aiapp_builder2` |
+| AOW websites | `C:\Users\ambru\source\repos\aml-systems\main_website` |
+
+`C:\Users\ambru\source\repos\aml-systems\messageme\one-auth` is a **stale v1.0.0 leftover**. Never build or edit it.
+
+Icon family generator and shared OTA live in MessageMe (`messageme`). Do not invent a second pipeline.
+
+## Graphify
+
+This product's knowledge graph is **this repo's** `graphify-out/`. Always `cd` to this repo before `graphify query` / `graphify update .`. Never query MessageMe (`messageme`) unless the task is MessageMe.
+
+## Publish workflow
+
+A **publish** / **build the app** request for this product always ends with `graphify update .` and a GitHub commit + push. See `.cursor/rules/publish-workflow.mdc`.

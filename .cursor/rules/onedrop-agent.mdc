@@ -1,0 +1,33 @@
+---
+description: OneDrop agent
+alwaysApply: true
+---
+
+# OneDrop agent
+
+Start **every** response with exactly: `[AmL] `
+
+OneDrop is a standalone AmL product (`one.aml.onedrop`). It sends any file
+over LAN (UDP 4071 + HTTP) and Bluetooth. Gallery stays image/video only.
+
+## Project map
+
+| Area | Path |
+|---|---|
+| Flutter clients | `app/` |
+| Shared radio | `packages/drop_p2p/` |
+| AirGrab | `packages/air_gesture/` |
+| Release scripts | `scripts/` |
+
+## Family boundaries
+
+- Edit `aml_ui` only in `global-assets`.
+- Icon generator and family OTA still live in MessageMe.
+- Never list Icon Tool on AmL One. OneDrop listing is authorized only when
+  this conversation says **publish** meaning the store, **and** an Android APK
+  exists.
+
+## Graphify
+
+Query and update `graphify-out/` from **this** repo root. Never query MessageMe
+for OneDrop work.

@@ -1,0 +1,110 @@
+---
+description: Official AmL hummingbird loader — fast AOW tempo, inline spinners only
+alwaysApply: true
+---
+
+# AmL bird loader — official AOW loading animation
+
+The low-poly hummingbird is the **official AmL logo and loading animation**.
+App Builder owns the brand source (`aiapp_builder2/brand/app-builder/`); the
+runtime widget and assets live in the **canonical** package:
+
+```
+global-assets/packages/aml_ui/
+  lib/src/bird_loader.dart       # BirdLoader + BirdRefreshIndicator
+  lib/src/settings_about_hero.dart
+  assets/bird_loader/*.png
+```
+
+Edit `aml_ui` only in `global-assets`. Flutter apps import it with
+`path: ../../global-assets/packages/aml_ui` — **no per-repo vendoring**.
+
+Regenerate loader PNGs from App Builder brand:
+
+```powershell
+cd C:\Users\ambru\source\repos\aml-systems\aiapp_builder2
+python .\scripts\generate-brand-assets.py
+```
+
+## Frozen tempo — every AmL app
+
+This is the official **fast** hover. Do **not** slow it for chat, lists,
+performance, or “calmer” motion. App Builder Settings is the visual reference.
+
+| | Flutter (`BirdLoader`) | App Builder CSS | `pivots.json` |
+|---|---|---|---|
+| Wing flap | `flapHalfDuration` **120ms** | `birdWingFlap` **120ms** alternate | `flapPeriodMs` **240** |
+| Hover bob | `bobDuration` **350ms** | `birdBob` **350ms** alternate | `bobPeriodMs` **700** |
+| Flap angle | `flapRadians` **±12°** | `rotate(±12deg)` | `flapDegrees` **12** |
+| Curve | `Curves.easeInOut` | `ease-in-out` | — |
+
+Update all three files together if the user **explicitly** asks to change tempo.
+Never change only Flutter or only CSS.
+
+```
+❌ 250ms flap / 1000ms bob / ±8°   (slow draft — never ship)
+❌ Slowing the bird “so chat stays smooth”
+❌ A second, slower loader for chat, Settings, or pull-to-refresh
+❌ Per-app durations or a local bird_loader.dart copy
+```
+
+## Hard rules — every Flutter app
+
+1. **Use `BirdLoader` from `package:aml_ui/aml_ui.dart`** for indeterminate
+   loading — full-screen waits, list skeletons, modal busy states,
+   scanner warm-up, etc. A **small inline** spinner inside a control that
+   already carries its own label may stay Material. See *Allowed to keep
+   Material progress indicators*.
+2. **Use `BirdRefreshIndicator`** instead of Material `RefreshIndicator` for
+   pull-to-refresh.
+3. **Every Settings screen** must open with `SettingsAboutHero` at the top
+   (animated bird → product name → version), matching App Builder's layout.
+4. **Never add a second copy** of the loader widget or bird PNGs inside an app
+   repo. Import from `aml_ui` only.
+5. After pivot/timing changes (only if the user asked), update `BirdLoader`
+   constants in `aml_ui/lib/src/bird_loader.dart` and the matching App Builder
+   web CSS (`apps/web/app/styles.css`) plus `pivots.json`.
+
+## MessageMe exception
+
+MessageMe **keeps** its own loaders for chat identity:
+
+- `AppLoader` (3-dot orbit / bubble spectacular)
+- `MessagemeRefreshIndicator`
+- `TypingIndicatorBubble` (chat typing dots)
+
+Do **not** replace those. MessageMe still uses `BirdLoader` / `SettingsAboutHero`
+for the Settings About hero and any **non-chat** family-branded surfaces.
+Those family surfaces use the **same fast tempo** as every other AmL app.
+
+## Allowed to keep Material progress indicators
+
+- **Determinate** progress: `LinearProgressIndicator`, `CircularProgressIndicator(value: …)`
+- OneAuth TOTP countdown ring on home cards (`CircularProgressIndicator` with `value`)
+- Upload/download/sync percentage bars
+- Desktop/Linux fallback inside MessageMe `AppLoader` only
+- Small **inline indeterminate** spinners inside a control that already
+  carries its own label: a busy button, a chip, a list row trailing slot.
+  Keep them small (about 16-20px) with `strokeWidth: 2`. A bird at that size
+  is a smudge, and one bird per row turns a list into a flock.
+
+## Forbidden
+
+```
+❌ CircularProgressIndicator() for a full-screen, section, or list wait in new code
+❌ A bird crammed into a button, chip, or row slot (use a small Material spinner)
+❌ RefreshIndicator for pull-to-refresh in new code
+❌ Copying bird_loader.dart or bird PNGs into app/lib or app/assets
+❌ Settings screen without SettingsAboutHero at the top
+❌ Vendoring aml_ui into product repos (use global-assets)
+❌ Slowing BirdLoader / CSS / pivots for performance or chat smoothness
+```
+
+## New AmL Flutter apps
+
+On day one:
+
+1. Add `aml_ui: path: ../../global-assets/packages/aml_ui` to `app/pubspec.yaml`
+2. Settings → `SettingsAboutHero` at top of `ListView`
+3. Screen- and section-level loading → `BirdLoader` or `BirdRefreshIndicator`
+4. Copy this file to `.cursor/rules/aml-bird-loader.mdc` with `alwaysApply: true`

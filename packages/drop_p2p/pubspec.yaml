@@ -1,0 +1,15 @@
+name: drop_p2p
+description: One Drop BLE beacon codec and native nearby-radio channel.
+publish_to: none
+version: 1.0.0
+
+environment:
+  sdk: ^3.11.4
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter

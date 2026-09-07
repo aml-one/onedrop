@@ -1,0 +1,67 @@
+---
+description: O'Mesh free-form gradients when the user asks to make Flutter UI fancier
+alwaysApply: true
+---
+
+# O'Mesh (`mesh`) — fancier Flutter surfaces
+
+Package: [`mesh`](https://pub.dev/packages/mesh) (`OMeshGradient` / `AnimatedOMeshGradient`).
+Shader + vertex mesh gradients. Not a JPEG. Use it as an extra AOW tool when
+the user asks to make a Flutter screen **fancier**.
+
+## When to reach for it
+
+Trigger phrases (this conversation, this screen): **fancier**, **fancy**,
+**more premium**, **more glass**, **more atmospheric**, **richer background**.
+
+Good targets: Settings/About heroes, empty states, lock/login, splash-adjacent
+atmosphere, a single card/hero behind static chrome.
+
+Do **not** add `mesh` on an ordinary restyle, bugfix, or new screen unless they
+used a trigger above.
+
+Do **not** add the pub dependency until that fancy-up task actually paints a
+mesh. Pin `mesh: ^0.5.0`. Import `package:mesh/mesh.dart`.
+
+## How (AOW, not the pub.dev demo)
+
+- Colors from `AmlTheme` / product pastels (violet, mint, pink, sky, amber).
+  Never the package’s demo oranges or neon.
+- Light from upper-left. Soft, restrained, 3×3 or 3×4 mesh. Keep ink readable.
+- Prefer a **static** `OMeshGradient` (or a slow `AnimatedOMeshGradient` on
+  a state change). Continuous controller loops only on a dedicated hero, never
+  behind a scrolling list.
+- Default tessellation **8–12**. Smaller containers: go lower, not higher.
+- Dark theme: deepen the same vertices; do not invent a second glyph/layout.
+- Wrap in `IgnorePointer` + clip to the same radius as the surface.
+
+```
+✅ Settings hero / empty state / login atmosphere with AOW pastels
+✅ One mesh behind a bounded, non-scrolling panel
+❌ Mesh on every ListView row, chat list, mail list, or composer
+❌ MessageMe bubbles, composer keyboard slot, IME / launcher hot paths
+❌ Replacing SettingsAmbientBackground globally without being asked
+❌ Tessellation 20+ or a 5×5 mesh on a phone list
+```
+
+## Performance
+
+Triangle count ≈ `(width-1) * (height-1) * (tessellation²) * 2`. Keep it small.
+Isolate with `RepaintBoundary`. Do not rebuild the mesh from a scroll offset
+or a per-frame list provider. If the surface is a hot path, keep the existing
+paint-only `RadialGradient` / `LinearGradient`.
+
+## Scope
+
+Flutter apps only. Web CSS siblings stay on existing gradients unless a
+separate web mesh exists. Native IME (`aml-secure-keyboard` keyboard) never
+gets Flutter `mesh`.
+
+If the same atmosphere is needed in more than one app, put a thin wrapper in
+`global-assets/packages/aml_ui` and import that — do not copy vertex arrays
+into every product.
+
+## New AmL Flutter apps
+
+Copy this file to `.cursor/rules/mesh-gradients.mdc` with `alwaysApply: true`
+on day one. Do not add the pub dependency until a fancy-up task needs it.

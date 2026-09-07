@@ -1,0 +1,29 @@
+---
+description: Maintain per-version changelog files after each completed task
+alwaysApply: true
+---
+
+# Changelog maintenance
+
+After completing any task that changes product behaviour, add one line to the
+**active changelog file** in the matching section.
+
+## Active file
+
+While repo root `version` is `X.Y.Z`, edit **only**:
+
+```
+changelog/onedrop-changelog-v<NEXT>
+```
+
+where `<NEXT>` is the semver after one bump. So `version` = `1.0.0` means
+you edit `changelog/onedrop-changelog-v1.0.1`, never `-v1.0.0`. After `1.0.9`
+the next file is `onedrop-changelog-v1.1.0`, never `v1.0.10`.
+
+Keep three sections in this order: Features, Improvements, Bug fixes.
+
+```
+[type] Short user-facing summary
+```
+
+Types are `feature`, `bugfix` and `improvement`. English only.

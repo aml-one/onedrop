@@ -1,0 +1,55 @@
+# Node
+node_modules/
+dist/
+*.log
+.next/
+out/
+*.tsbuildinfo
+
+# Env / secrets
+.env
+.env.local
+*.pem
+*.key
+!docs/**/*.key.example
+secrets/
+ca/private/
+
+# Server runtime data (local dev)
+server/data/
+
+# Compose bind mounts: sealed blobs and published release artifacts
+data/
+
+# Flutter / Dart
+app/.dart_tool/
+app/.packages
+app/build/
+app/.flutter-plugins
+app/.flutter-plugins-dependencies
+app/dist/
+packages/*/.dart_tool/
+packages/*/build/
+packages/*/pubspec.lock
+graphify-out/
+
+# IDE
+.idea/
+*.iml
+.vscode/*
+!.vscode/launch.json
+!.vscode/tasks.json
+!.vscode/settings.json
+
+# OS
+Thumbs.db
+.DS_Store
+
+# JVM heap dumps
+*.hprof
+
+# Local deploy archives (rebuilt by deploy-onemail.ps1)
+deploy-onemail.tgz
+
+# Release bump lock — prevents double version bump on failed build retry
+.release-bump-lock

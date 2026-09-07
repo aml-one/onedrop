@@ -1,0 +1,20 @@
+---
+description: Never build or install a OneDrop APK without real APP_VERSION dart-defines
+alwaysApply: true
+---
+
+# APK version discipline
+
+`app/lib/core/app_version.dart` reads:
+
+```dart
+const String kAppVersion = String.fromEnvironment('APP_VERSION', defaultValue: '1.0.0');
+```
+
+A bare `flutter build apk` therefore produces a client that reports `1.0.0`.
+
+## Always
+
+Build through the scripts, which pass the defines automatically.
+
+If the filename has no version label, delete it and rebuild through the script.
