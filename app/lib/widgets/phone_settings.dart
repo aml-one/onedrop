@@ -10,6 +10,7 @@ import '../core/drop_controller.dart';
 import '../core/drop_prefs.dart';
 import '../core/panel_window.dart';
 import '../screens/file_explorer_screen.dart';
+import '../screens/nearby_debug_screen.dart';
 import '../services/air_grab_session.dart';
 import '../services/drop_service.dart';
 import '../services/file_explorer_service.dart';
@@ -105,11 +106,13 @@ class _PhoneSettingsViewState extends State<PhoneSettingsView> {
               Expanded(
                 child: Text(
                   'Settings',
-                  style: TextStyle(
-                    fontWeight: FontWeight.w800,
-                    fontSize: 22,
-                    letterSpacing: -0.4,
-                    color: ink,
+                  style: AmlTheme.ui(
+                    TextStyle(
+                      fontWeight: FontWeight.w700,
+                      fontSize: 22,
+                      letterSpacing: -0.4,
+                      color: ink,
+                    ),
                   ),
                 ),
               ),
@@ -291,6 +294,19 @@ class _PhoneSettingsViewState extends State<PhoneSettingsView> {
                       subtitle: DropPrefs.inboxShortLabel,
                       showChevron: true,
                       onTap: _chooseInbox,
+                    ),
+                    SettingsNavTile(
+                      icon: Icons.bluetooth_searching_rounded,
+                      title: 'Nearby debug',
+                      subtitle: 'Bluetooth, Wi‑Fi, and why a device is missing',
+                      showChevron: true,
+                      onTap: () {
+                        Navigator.of(context).push(
+                          MaterialPageRoute<void>(
+                            builder: (_) => const NearbyDebugScreen(),
+                          ),
+                        );
+                      },
                     ),
                   ],
                 ),

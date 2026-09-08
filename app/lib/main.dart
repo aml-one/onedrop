@@ -136,7 +136,12 @@ class _OneDropAppState extends State<OneDropApp> with WidgetsBindingObserver {
                 )
               : dark,
           builder: (context, child) {
-            final page = child ?? const SizedBox.shrink();
+            final page = DefaultTextStyle(
+              style: AmlTheme.ui(
+                Theme.of(context).textTheme.bodyMedium ?? const TextStyle(),
+              ),
+              child: child ?? const SizedBox.shrink(),
+            );
             if (!isPhoneSurface) return page;
             return PopScope(
               canPop: false,

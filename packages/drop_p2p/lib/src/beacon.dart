@@ -14,7 +14,7 @@ const dropP2pServiceUuid = 'a11d0d01-6d65-4f6e-6472-6f70426c6531';
 const dropP2pInfoUuid = 'a11d0d01-6d65-4f6e-6472-6f70426c6532';
 const dropP2pLinkUuid = 'a11d0d01-6d65-4f6e-6472-6f70426c6533';
 
-const dropRadioPeerTtl = Duration(seconds: 12);
+const dropRadioPeerTtl = Duration(seconds: 30);
 
 class DropP2pBeacon {
   const DropP2pBeacon({

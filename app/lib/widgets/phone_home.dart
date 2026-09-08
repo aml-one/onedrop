@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import '../core/drop_controller.dart';
 import '../core/drop_prefs.dart';
 import '../core/labels.dart';
+import '../core/nearby_motion.dart';
 import '../core/panel_window.dart';
 import '../screens/file_explorer_screen.dart';
 import '../screens/photo_picker_screen.dart';
@@ -145,12 +146,14 @@ class _PhoneTopBar extends StatelessWidget {
               children: [
                 Text(
                   'One Drop',
-                  style: TextStyle(
-                    fontWeight: FontWeight.w800,
-                    fontSize: 22,
-                    height: 1.05,
-                    letterSpacing: -0.5,
-                    color: ink,
+                  style: AmlTheme.ui(
+                    TextStyle(
+                      fontWeight: FontWeight.w700,
+                      fontSize: 22,
+                      height: 1.05,
+                      letterSpacing: -0.5,
+                      color: ink,
+                    ),
                   ),
                 ),
                 const SizedBox(height: 4),
@@ -163,10 +166,12 @@ class _PhoneTopBar extends StatelessWidget {
                         DropPrefs.dropDisplayName,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontWeight: FontWeight.w600,
-                          fontSize: 13,
-                          color: muted,
+                        style: AmlTheme.ui(
+                          TextStyle(
+                            fontWeight: FontWeight.w600,
+                            fontSize: 13,
+                            color: muted,
+                          ),
                         ),
                       ),
                     ),
@@ -220,6 +225,7 @@ class _LiveDotState extends State<_LiveDot>
 
   @override
   Widget build(BuildContext context) {
+    final cheap = cheapNearbyMotion(context);
     return FadeTransition(
       opacity: Tween(begin: 0.45, end: 1.0).animate(_pulse),
       child: Container(
@@ -228,12 +234,14 @@ class _LiveDotState extends State<_LiveDot>
         decoration: BoxDecoration(
           shape: BoxShape.circle,
           color: AmlTheme.mint,
-          boxShadow: [
-            BoxShadow(
-              color: AmlTheme.mint.withValues(alpha: 0.55),
-              blurRadius: 6,
-            ),
-          ],
+          boxShadow: cheap
+              ? const []
+              : [
+                  BoxShadow(
+                    color: AmlTheme.mint.withValues(alpha: 0.55),
+                    blurRadius: 6,
+                  ),
+                ],
         ),
       ),
     );
@@ -334,7 +342,7 @@ class _PhoneListenError extends StatelessWidget {
             'One Drop couldn’t open on this Wi‑Fi',
             textAlign: TextAlign.center,
             style: TextStyle(
-              fontWeight: FontWeight.w800,
+              fontWeight: FontWeight.w700,
               fontSize: 20,
               color: AmlTheme.inkOf(context),
             ),
@@ -376,6 +384,7 @@ class _DropConstellation extends StatefulWidget {
 class _DropConstellationState extends State<_DropConstellation>
     with SingleTickerProviderStateMixin {
   late final AnimationController _pulse;
+  bool _cheap = false;
 
   @override
   void initState() {
@@ -384,6 +393,16 @@ class _DropConstellationState extends State<_DropConstellation>
       vsync: this,
       duration: const Duration(milliseconds: 2800),
     )..repeat();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final next = cheapNearbyMotion(context);
+    if (next == _cheap) return;
+    _cheap = next;
+    _pulse.duration = Duration(milliseconds: next ? 3600 : 2800);
+    if (!_pulse.isAnimating) _pulse.repeat();
   }
 
   @override
@@ -415,9 +434,12 @@ class _DropConstellationState extends State<_DropConstellation>
                   builder: (context, _) {
                     return CustomPaint(
                       painter: _FieldPainter(
-                        t: _pulse.value,
+                        t: _cheap
+                            ? (_pulse.value * 16).floor() / 16
+                            : _pulse.value,
                         origin: origin,
                         well: well,
+                        cheap: _cheap,
                       ),
                     );
                   },
@@ -446,11 +468,13 @@ class _DropConstellationState extends State<_DropConstellation>
                 child: Text(
                   'Keep OneDrop open on the other phone or PC. Bluetooth finds it even without the same Wi‑Fi.',
                   textAlign: TextAlign.center,
-                  style: TextStyle(
-                    fontWeight: FontWeight.w600,
-                    fontSize: 14,
-                    height: 1.4,
-                    color: AmlTheme.mutedOf(context),
+                  style: AmlTheme.ui(
+                    TextStyle(
+                      fontWeight: FontWeight.w600,
+                      fontSize: 14,
+                      height: 1.4,
+                      color: AmlTheme.mutedOf(context),
+                    ),
                   ),
                 ),
               )
@@ -466,10 +490,12 @@ class _DropConstellationState extends State<_DropConstellation>
                           ? 'Tap a device to send'
                           : 'Tap a device — or tap the droplet to pick media files',
                   textAlign: TextAlign.center,
-                  style: TextStyle(
-                    fontWeight: FontWeight.w700,
-                    fontSize: 13,
-                    color: AmlTheme.mutedOf(context),
+                  style: AmlTheme.ui(
+                    TextStyle(
+                      fontWeight: FontWeight.w700,
+                      fontSize: 13,
+                      color: AmlTheme.mutedOf(context),
+                    ),
                   ),
                 ),
               ),
@@ -509,11 +535,13 @@ class _FieldPainter extends CustomPainter {
     required this.t,
     required this.origin,
     required this.well,
+    required this.cheap,
   });
 
   final double t;
   final Offset origin;
   final double well;
+  final bool cheap;
 
   static const _wave = Color.fromRGBO(210, 230, 255, 1);
 
@@ -521,21 +549,31 @@ class _FieldPainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     final maxR = math.min(size.width, size.height) * 0.46;
     final inner = well * 0.42;
-    canvas.drawCircle(
-      origin,
-      well * 0.78,
-      Paint()
-        ..shader = RadialGradient(
-          colors: [
-            AmlTheme.sky.withValues(alpha: 0.16),
-            AmlTheme.sky.withValues(alpha: 0),
-          ],
-        ).createShader(
-          Rect.fromCircle(center: origin, radius: well * 1.1),
-        ),
-    );
-    for (var i = 0; i < 5; i++) {
-      final local = (t + i / 5) % 1.0;
+    final step = cheap ? (t * 16).floor() / 16 : t;
+    if (!cheap) {
+      canvas.drawCircle(
+        origin,
+        well * 0.78,
+        Paint()
+          ..shader = RadialGradient(
+            colors: [
+              AmlTheme.sky.withValues(alpha: 0.16),
+              AmlTheme.sky.withValues(alpha: 0),
+            ],
+          ).createShader(
+            Rect.fromCircle(center: origin, radius: well * 1.1),
+          ),
+      );
+    } else {
+      canvas.drawCircle(
+        origin,
+        well * 0.72,
+        Paint()..color = AmlTheme.sky.withValues(alpha: 0.10),
+      );
+    }
+    final rings = cheap ? 2 : 5;
+    for (var i = 0; i < rings; i++) {
+      final local = (step + i / rings) % 1.0;
       final fade = (1.0 - local).clamp(0.0, 1.0);
       if (fade <= 0) continue;
       final radius = inner + local * (maxR - inner);
@@ -544,10 +582,11 @@ class _FieldPainter extends CustomPainter {
         radius,
         Paint()
           ..style = PaintingStyle.stroke
-          ..strokeWidth = (2.4 - i * 0.25).clamp(1.0, 2.4)
-          ..color = _wave.withValues(alpha: fade * 0.55),
+          ..strokeWidth = cheap ? 1.4 : (2.4 - i * 0.25).clamp(1.0, 2.4)
+          ..color = _wave.withValues(alpha: fade * (cheap ? 0.40 : 0.55)),
       );
     }
+    if (cheap) return;
     const seeds = [
       (0.12, 0.22, 3.0),
       (0.84, 0.18, 2.4),
@@ -580,7 +619,8 @@ class _FieldPainter extends CustomPainter {
   bool shouldRepaint(covariant _FieldPainter oldDelegate) =>
       oldDelegate.t != t ||
       oldDelegate.origin != origin ||
-      oldDelegate.well != well;
+      oldDelegate.well != well ||
+      oldDelegate.cheap != cheap;
 }
 
 class _DropWell extends StatelessWidget {
@@ -599,7 +639,11 @@ class _DropWell extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final glyph = searching
-        ? Center(child: BirdLoader(size: size * 0.72))
+        ? Center(
+            child: RepaintBoundary(
+              child: BirdLoader(size: size * 0.72),
+            ),
+          )
         : pending
             ? Icon(
                 Icons.unarchive_rounded,
@@ -825,7 +869,7 @@ class _OrbitPeer extends StatelessWidget {
                 overflow: TextOverflow.ellipsis,
                 textAlign: TextAlign.center,
                 style: TextStyle(
-                  fontWeight: FontWeight.w800,
+                  fontWeight: FontWeight.w700,
                   fontSize: 12,
                   color: AmlTheme.inkOf(context),
                 ),
@@ -881,7 +925,7 @@ class _ReadyChip extends StatelessWidget {
                     Text(
                       'Ready to send',
                       style: TextStyle(
-                        fontWeight: FontWeight.w800,
+                        fontWeight: FontWeight.w700,
                         fontSize: 15,
                         color: AmlTheme.inkOf(context),
                       ),
@@ -956,12 +1000,14 @@ class _DockTile extends StatelessWidget {
                     textAlign: TextAlign.center,
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      fontWeight: FontWeight.w800,
-                      fontSize: 16,
-                      color: onTap == null
-                          ? AmlTheme.mutedOf(context)
-                          : AmlTheme.inkOf(context),
+                    style: AmlTheme.ui(
+                      TextStyle(
+                        fontWeight: FontWeight.w700,
+                        fontSize: 16,
+                        color: onTap == null
+                            ? AmlTheme.mutedOf(context)
+                            : AmlTheme.inkOf(context),
+                      ),
                     ),
                   ),
                   const SizedBox(height: 2),
@@ -969,10 +1015,12 @@ class _DockTile extends StatelessWidget {
                     hint,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      fontWeight: FontWeight.w600,
-                      fontSize: 12,
-                      color: AmlTheme.mutedOf(context),
+                    style: AmlTheme.ui(
+                      TextStyle(
+                        fontWeight: FontWeight.w600,
+                        fontSize: 12,
+                        color: AmlTheme.mutedOf(context),
+                      ),
                     ),
                   ),
                 ],

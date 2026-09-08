@@ -53,6 +53,7 @@ class DropP2p {
 
   static Stream<DropP2pSighting>? _sightings;
   static bool _started = false;
+  static String? lastError;
 
   static bool get supported {
     if (kIsWeb) return false;
@@ -76,8 +77,9 @@ class DropP2p {
     required String os,
   }) async {
     if (!supported) return;
+    lastError = null;
     try {
-      await _methods.invokeMethod<void>('start', {
+      final ok = await _methods.invokeMethod<bool>('start', {
         'peerId': peerId,
         'name': name,
         'port': port,
@@ -91,8 +93,32 @@ class DropP2p {
         ),
         'nameBytes': encodeDropP2pName(name),
       });
-      _started = true;
-    } catch (_) {}
+      _started = ok != false;
+      if (ok == false) {
+        lastError = 'nearby permissions missing or radio did not start';
+      }
+    } catch (error) {
+      lastError = '$error';
+    }
+  }
+
+  static Future<Map<String, Object?>> debugStatus() async {
+    if (!supported) {
+      return {'supported': false, 'lastError': lastError};
+    }
+    try {
+      final raw = await _methods.invokeMethod<dynamic>('debugStatus');
+      if (raw is Map) {
+        return {
+          'supported': true,
+          'lastError': lastError,
+          for (final entry in raw.entries) '${entry.key}': entry.value,
+        };
+      }
+    } catch (error) {
+      return {'supported': true, 'error': '$error', 'lastError': lastError};
+    }
+    return {'supported': true, 'lastError': lastError};
   }
 
   static Future<void> setScanHard(bool hard) async {

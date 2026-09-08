@@ -12,6 +12,7 @@ import 'core/drop_controller.dart';
 import 'core/drop_prefs.dart';
 import 'core/host.dart';
 import 'core/labels.dart';
+import 'core/nearby_motion.dart';
 import 'core/panel_window.dart';
 import 'screens/file_explorer_screen.dart';
 import 'screens/photo_picker_screen.dart';
@@ -41,7 +42,15 @@ class OneDropPanel extends StatelessWidget {
     // finished the activity instead of returning to Home.
     return _trapPhoneBack(
       controller,
-      ListenableBuilder(
+      AnnotatedRegion<SystemUiOverlayStyle>(
+        value: const SystemUiOverlayStyle(
+          statusBarColor: kSettingsPageBackground,
+          statusBarIconBrightness: Brightness.dark,
+          statusBarBrightness: Brightness.light,
+          systemNavigationBarColor: kSettingsPageBackground,
+          systemNavigationBarIconBrightness: Brightness.dark,
+        ),
+        child: ListenableBuilder(
         listenable: controller,
         builder: (context, _) {
           return DropTarget(
@@ -66,12 +75,10 @@ class OneDropPanel extends StatelessWidget {
                     onClose: controller.closePreview,
                   )
                 else ...[
-                  const SettingsAmbientBackground(),
+                  const RepaintBoundary(child: SettingsAmbientBackground()),
                   ColoredBox(
                     color: kSettingsPageBackground.withValues(alpha: 0.88),
-                    child: AnnotatedRegion<SystemUiOverlayStyle>(
-                      value: AmlTheme.lightStatusBarOverlay,
-                      child: isPhoneSurface
+                    child: isPhoneSurface
                           ? SafeArea(
                               child: Column(
                                 children: [
@@ -99,7 +106,6 @@ class OneDropPanel extends StatelessWidget {
                                 ),
                               ],
                             ),
-                    ),
                   ),
                   const AirGrabOverlay(),
                 ],
@@ -115,6 +121,7 @@ class OneDropPanel extends StatelessWidget {
           ),
           );
         },
+      ),
       ),
     );
   }
@@ -192,7 +199,7 @@ class _Header extends StatelessWidget {
                 Text(
                   'One Drop',
                   style: TextStyle(
-                    fontWeight: FontWeight.w800,
+                    fontWeight: FontWeight.w700,
                     fontSize: 22,
                     height: 1.05,
                     letterSpacing: -0.4,
@@ -243,7 +250,7 @@ class _DeskBrand extends StatelessWidget {
             'OneDrop',
             textAlign: TextAlign.center,
             style: TextStyle(
-              fontWeight: FontWeight.w800,
+              fontWeight: FontWeight.w700,
               fontSize: 16,
               height: 1.1,
               letterSpacing: -0.3,
@@ -503,7 +510,7 @@ class _NearbyView extends StatelessWidget {
                             borderRadius: BorderRadius.circular(10),
                           ),
                           textStyle: const TextStyle(
-                            fontWeight: FontWeight.w800,
+                            fontWeight: FontWeight.w700,
                             fontSize: 13,
                           ),
                         ),
@@ -603,7 +610,7 @@ class _ListenError extends StatelessWidget {
             'One Drop couldn’t open on this Wi‑Fi',
             textAlign: TextAlign.center,
             style: TextStyle(
-              fontWeight: FontWeight.w800,
+              fontWeight: FontWeight.w700,
               fontSize: 15,
               color: AmlTheme.inkOf(context),
             ),
@@ -639,7 +646,7 @@ class _Searching extends StatelessWidget {
         Text(
           'Looking nearby',
           style: TextStyle(
-            fontWeight: FontWeight.w800,
+            fontWeight: FontWeight.w700,
             fontSize: phone ? 22 : 14,
             letterSpacing: -0.3,
             color: AmlTheme.inkOf(context),
@@ -697,45 +704,55 @@ class _RadarState extends State<_Radar> with SingleTickerProviderStateMixin {
 
   @override
   Widget build(BuildContext context) {
+    final cheap = cheapNearbyMotion(context);
     return SizedBox(
       width: widget.size,
       height: widget.size,
-      child: AnimatedBuilder(
-        animation: _pulse,
-        builder: (context, child) {
-          return CustomPaint(
-            painter: _RadarPainter(t: _pulse.value),
-            child: child,
-          );
-        },
-        child: Center(child: BirdLoader(size: widget.bird)),
+      child: RepaintBoundary(
+        child: AnimatedBuilder(
+          animation: _pulse,
+          builder: (context, child) {
+            return CustomPaint(
+              painter: _RadarPainter(
+                t: cheap ? (_pulse.value * 12).floor() / 12 : _pulse.value,
+                cheap: cheap,
+              ),
+              child: child,
+            );
+          },
+          child: Center(child: BirdLoader(size: widget.bird)),
+        ),
       ),
     );
   }
 }
 
 class _RadarPainter extends CustomPainter {
-  _RadarPainter({required this.t});
+  _RadarPainter({required this.t, required this.cheap});
 
   final double t;
+  final bool cheap;
 
   @override
   void paint(Canvas canvas, Size size) {
     final center = Offset(size.width / 2, size.height / 2);
     final maxR = size.shortestSide / 2;
-    for (var i = 0; i < 3; i++) {
-      final local = (t + i / 3) % 1.0;
+    final rings = cheap ? 2 : 3;
+    final step = cheap ? (t * 12).floor() / 12 : t;
+    for (var i = 0; i < rings; i++) {
+      final local = (step + i / rings) % 1.0;
       final radius = 22 + local * (maxR - 22);
       final paint = Paint()
         ..style = PaintingStyle.stroke
-        ..strokeWidth = 2
+        ..strokeWidth = cheap ? 1.4 : 2
         ..color = AmlTheme.sky.withValues(alpha: (1 - local) * 0.42);
       canvas.drawCircle(center, radius, paint);
     }
   }
 
   @override
-  bool shouldRepaint(covariant _RadarPainter oldDelegate) => oldDelegate.t != t;
+  bool shouldRepaint(covariant _RadarPainter oldDelegate) =>
+      oldDelegate.t != t || oldDelegate.cheap != cheap;
 }
 
 class _PeerList extends StatelessWidget {
@@ -864,7 +881,7 @@ class _PeerRow extends StatelessWidget {
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(
-                        fontWeight: FontWeight.w800,
+                        fontWeight: FontWeight.w700,
                         fontSize: phone ? 18 : 13,
                         letterSpacing: -0.2,
                         color: AmlTheme.inkOf(context),
@@ -928,7 +945,7 @@ class _SendButton extends StatelessWidget {
                   Text(
                     label,
                     style: TextStyle(
-                      fontWeight: FontWeight.w800,
+                      fontWeight: FontWeight.w700,
                       fontSize: 15,
                       color: onTap == null
                           ? AmlTheme.mutedOf(context)
@@ -978,7 +995,7 @@ class _SendButton extends StatelessWidget {
                 Text(
                   label,
                   style: const TextStyle(
-                    fontWeight: FontWeight.w800,
+                    fontWeight: FontWeight.w700,
                     fontSize: 14,
                     color: Colors.white,
                   ),
@@ -1040,7 +1057,7 @@ class _ReceiveView extends StatelessWidget {
             done ? 'Received' : 'Receiving from ${progress.peerName}',
             textAlign: TextAlign.center,
             style: TextStyle(
-              fontWeight: FontWeight.w800,
+              fontWeight: FontWeight.w700,
               fontSize: phone ? 22 : 15,
               height: 1.15,
               color: ink,
@@ -1117,7 +1134,7 @@ class _ReceiveRing extends StatelessWidget {
           Text(
             '${(fraction.clamp(0.0, 1.0) * 100).round()}%',
             style: TextStyle(
-              fontWeight: FontWeight.w800,
+              fontWeight: FontWeight.w700,
               fontSize: size >= 90 ? 20 : 15,
               letterSpacing: -0.4,
               color: AmlTheme.sky,
@@ -1172,7 +1189,7 @@ class _OfferView extends StatelessWidget {
                 child: Text(
                   dropInitial(offer.peerName),
                   style: TextStyle(
-                    fontWeight: FontWeight.w800,
+                    fontWeight: FontWeight.w700,
                     fontSize: phone ? 32 : 20,
                     color: Colors.white,
                   ),
@@ -1185,7 +1202,7 @@ class _OfferView extends StatelessWidget {
             '${offer.peerName} wants to send',
             textAlign: TextAlign.center,
             style: TextStyle(
-              fontWeight: FontWeight.w800,
+              fontWeight: FontWeight.w700,
               fontSize: phone ? 22 : 15,
               height: 1.15,
               color: ink,
@@ -1291,7 +1308,7 @@ class _SendView extends StatelessWidget {
             title,
             textAlign: TextAlign.center,
             style: TextStyle(
-              fontWeight: FontWeight.w800,
+              fontWeight: FontWeight.w700,
               fontSize: phone ? 22 : 15,
               color: ink,
             ),
@@ -1324,7 +1341,7 @@ class _SendView extends StatelessWidget {
             Text(
               '${((progress?.fraction ?? 0) * 100).round()}%',
               style: const TextStyle(
-                fontWeight: FontWeight.w800,
+                fontWeight: FontWeight.w700,
                 fontSize: 13,
                 color: AmlTheme.sky,
               ),

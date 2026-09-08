@@ -100,6 +100,9 @@ object OneDropP2p {
     private var activeGatt: BluetoothGatt? = null
     private var advertiseStarted = false
     private var scanStarted = false
+    private var lastSkip = ""
+    private var lastAdvertiseError: Int? = null
+    private var lastScanError: Int? = null
     @Volatile
     private var radioHeldForCamera = false
 
@@ -117,6 +120,7 @@ object OneDropP2p {
                         call.argument<ByteArray>("nameBytes") ?: ByteArray(0),
                     )
                     dartSession = true
+                    scanHard = true
                     start(result)
                 }
                 "stop" -> {
@@ -132,6 +136,7 @@ object OneDropP2p {
                     teardownClient()
                     result.success(true)
                 }
+                "debugStatus" -> result.success(debugStatus())
                 else -> result.notImplemented()
             }
         }
@@ -307,12 +312,14 @@ object OneDropP2p {
     private fun start(result: MethodChannel.Result) {
         val ctx = app
         if (ctx == null) {
-            result.error("no_context", "Gallery is not open", null)
+            lastSkip = "no_context"
+            result.error("no_context", "OneDrop is not open", null)
             return
         }
         persistIdentity(ctx)
         running = true
         if (!hasPermissions(ctx)) {
+            lastSkip = "missing_permissions"
             Log.i(TAG, "start: nearby perms missing; wait until AirGrab is idle")
             result.success(false)
             return
@@ -323,18 +330,60 @@ object OneDropP2p {
 
     @SuppressLint("MissingPermission")
     private fun startRadio() {
-        val ctx = app ?: return
-        if (!hasPermissions(ctx)) return
-        val manager = ctx.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager ?: return
-        val adapter = manager.adapter ?: return
-        if (!adapter.isEnabled) return
+        val ctx = app ?: run {
+            lastSkip = "no_context"
+            return
+        }
+        if (!hasPermissions(ctx)) {
+            lastSkip = "missing_permissions"
+            return
+        }
+        val manager = ctx.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager ?: run {
+            lastSkip = "no_bt_manager"
+            return
+        }
+        val adapter = manager.adapter ?: run {
+            lastSkip = "no_adapter"
+            return
+        }
+        if (!adapter.isEnabled) {
+            lastSkip = "bluetooth_off"
+            return
+        }
         openGattServer(manager)
         if (radioHeldForCamera) {
+            lastSkip = "held_for_camera"
             Log.i(TAG, "radio held for AirGrab camera")
             return
         }
+        lastSkip = ""
         startAdvertise(adapter)
         startScan(adapter)
+    }
+
+    private fun debugStatus(): HashMap<String, Any?> {
+        val ctx = app
+        val adapter = bluetoothAdapter()
+        return hashMapOf(
+            "platform" to "android",
+            "model" to Build.MODEL,
+            "manufacturer" to Build.MANUFACTURER,
+            "sdk" to Build.VERSION.SDK_INT,
+            "running" to running,
+            "dartSession" to dartSession,
+            "advertiseStarted" to advertiseStarted,
+            "scanStarted" to scanStarted,
+            "bluetoothOn" to (adapter?.isEnabled == true),
+            "hasAdvertiser" to (adapter?.bluetoothLeAdvertiser != null),
+            "leFeature" to (ctx?.packageManager?.hasSystemFeature(PackageManager.FEATURE_BLUETOOTH_LE) == true),
+            "hasPermissions" to (ctx != null && hasPermissions(ctx)),
+            "skip" to lastSkip,
+            "advertiseError" to lastAdvertiseError,
+            "scanError" to lastScanError,
+            "peerId" to peerId,
+            "httpPort" to httpPort,
+            "radioHeldForCamera" to radioHeldForCamera,
+        )
     }
 
     private fun bluetoothAdapter(): BluetoothAdapter? {
@@ -390,8 +439,17 @@ object OneDropP2p {
 
     @SuppressLint("MissingPermission")
     private fun startAdvertise(adapter: BluetoothAdapter) {
-        if (beacon.isEmpty()) return
-        val key = "$peerId|$httpPort|${beacon.contentHashCode()}|${nameBytes.contentHashCode()}"
+        if (beacon.isEmpty()) {
+            lastSkip = "empty_beacon"
+            return
+        }
+        val advertiseMode = if (dartSession) {
+            AdvertiseSettings.ADVERTISE_MODE_BALANCED
+        } else {
+            AdvertiseSettings.ADVERTISE_MODE_LOW_POWER
+        }
+        val key =
+            "$peerId|$httpPort|$advertiseMode|${beacon.contentHashCode()}|${nameBytes.contentHashCode()}"
         if (advertiseStarted && advertisedKey == key) return
         if (advertiseStarted) {
             try {
@@ -400,10 +458,19 @@ object OneDropP2p {
             }
             advertiseStarted = false
         }
-        advertiser = adapter.bluetoothLeAdvertiser ?: return
+        advertiser = adapter.bluetoothLeAdvertiser ?: run {
+            lastSkip = "no_le_advertiser"
+            return
+        }
         val settings = AdvertiseSettings.Builder()
-            .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_POWER)
-            .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_LOW)
+            .setAdvertiseMode(advertiseMode)
+            .setTxPowerLevel(
+                if (dartSession) {
+                    AdvertiseSettings.ADVERTISE_TX_POWER_MEDIUM
+                } else {
+                    AdvertiseSettings.ADVERTISE_TX_POWER_LOW
+                },
+            )
             .setConnectable(true)
             .setTimeout(0)
             .build()
@@ -420,6 +487,7 @@ object OneDropP2p {
             advertiseStarted = true
             advertisedKey = key
         } catch (error: Exception) {
+            lastSkip = "advertise_exception"
             Log.w(TAG, "advertise", error)
         }
     }
@@ -806,6 +874,8 @@ object OneDropP2p {
         override fun onStartFailure(errorCode: Int) {
             advertiseStarted = false
             advertisedKey = ""
+            lastAdvertiseError = errorCode
+            lastSkip = "advertise_failed_$errorCode"
             Log.w(TAG, "advertise failed $errorCode")
         }
     }
@@ -822,6 +892,8 @@ object OneDropP2p {
         }
 
         override fun onScanFailed(errorCode: Int) {
+            lastScanError = errorCode
+            lastSkip = "scan_failed_$errorCode"
             Log.w(TAG, "scan failed $errorCode")
         }
     }

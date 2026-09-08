@@ -14,8 +14,10 @@ $script:RepoRoot = Split-Path $PSScriptRoot -Parent
 $script:DefaultRemoteReleasesDir = '/home/ambrus/www/aml/onedrop.aml.one/downloads'
 $script:DefaultSshHost = 'ambrus@frankfurt.aml.one'
 $script:DefaultSshPort = 717
-$script:DownloadsUrl = 'https://onedrop.aml.one/downloads'
-$script:DownloadsPageUrl = 'https://onedrop.aml.one/downloads'
+# Store clients (and this host) fetch OTA via the aml.one path. The dedicated
+# onedrop.aml.one hostname is Caddy-ready, but DNS is not always present.
+$script:DownloadsUrl = 'https://aml.one/onedrop-ota'
+$script:DownloadsPageUrl = 'https://aml.one/onedrop-ota'
 
 $script:PlatformKeys = @(
     'onedropAndroid',

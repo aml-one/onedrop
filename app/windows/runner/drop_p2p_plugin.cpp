@@ -289,6 +289,18 @@ class DropP2pPlugin {
       result->Success(EncodableValue(true));
       return;
     }
+    if (call.method_name() == "debugStatus") {
+      EncodableMap status;
+      status[EncodableValue("platform")] = EncodableValue("windows");
+      status[EncodableValue("peerId")] = EncodableValue(peer_id_);
+      status[EncodableValue("name")] = EncodableValue(name_);
+      status[EncodableValue("httpPort")] = EncodableValue(http_port_);
+      status[EncodableValue("beaconBytes")] =
+          EncodableValue(static_cast<int>(beacon_.size()));
+      status[EncodableValue("watching")] = EncodableValue(watcher_ != nullptr);
+      result->Success(EncodableValue(status));
+      return;
+    }
     result->NotImplemented();
   }
 

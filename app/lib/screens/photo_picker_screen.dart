@@ -396,7 +396,7 @@ class _ChipRow extends StatelessWidget {
             style: TextStyle(
               color: muted,
               fontSize: 12,
-              fontWeight: FontWeight.w800,
+              fontWeight: FontWeight.w700,
               letterSpacing: 0.2,
               fontFamily: AmlTheme.platformUiFontFamily(),
               fontFamilyFallback: AmlTheme.uiFontFamilyFallback,
@@ -471,7 +471,7 @@ class _PastelFilterChip extends StatelessWidget {
             style: TextStyle(
               color: spec.accent,
               fontSize: 12,
-              fontWeight: FontWeight.w800,
+              fontWeight: FontWeight.w700,
               height: 1.15,
               fontFamily: AmlTheme.platformUiFontFamily(),
               fontFamilyFallback: AmlTheme.uiFontFamilyFallback,

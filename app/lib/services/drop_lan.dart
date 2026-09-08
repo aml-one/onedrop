@@ -1,7 +1,11 @@
 import 'dart:io';
 
 /// How long a hello stays live without a fresh UDP packet.
-const dropPeerTtl = Duration(seconds: 8);
+///
+/// Xiaomi / ColorOS APs often drop Wi‑Fi broadcasts, so two missed hellos
+/// used to yank a phone off Nearby. 24s covers a few quiet windows without
+/// leaving a walked-away device on the ring.
+const dropPeerTtl = Duration(seconds: 24);
 
 const _neighborCacheTtl = Duration(seconds: 12);
 
@@ -107,7 +111,11 @@ bool dropPeerStillHere({
 }) {
   if (now.difference(lastSeen) > ttl) return false;
   if (dropHostIsSelf(host, local)) return false;
-  return dropHostOnLocalLan(host, local);
+  final lan = local.toList(growable: false);
+  // NetworkInterface.list can return empty for a tick on Android. Do not
+  // wipe every Nearby row just because Wi‑Fi addresses are briefly unknown.
+  if (lan.isEmpty) return true;
+  return dropHostOnLocalLan(host, lan);
 }
 
 List<InternetAddress> dropBroadcastDestinationsFrom(
@@ -165,10 +173,15 @@ Future<List<InternetAddress>> dropLanNeighborIpv4(
 
   final found = <String, InternetAddress>{};
   try {
-    if (Platform.isWindows) {
+    if (Platform.isAndroid) {
+      // `ip neigh` is SELinux-denied for untrusted apps (netlink bind).
+      // /proc/net/arp is readable and is what we actually need.
+      final arp = await File('/proc/net/arp').readAsString();
+      _collectNeighborIps(arp, found);
+    } else if (Platform.isWindows) {
       final result = await Process.run('arp', const ['-a']);
       _collectNeighborIps('${result.stdout}', found);
-    } else if (Platform.isAndroid || Platform.isLinux) {
+    } else if (Platform.isLinux) {
       final result = await Process.run('ip', const ['neigh']);
       if (result.exitCode == 0) {
         _collectNeighborIps('${result.stdout}', found);

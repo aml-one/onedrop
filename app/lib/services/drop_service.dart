@@ -318,6 +318,8 @@ class DropService {
   bool _lanListed = false;
   List<InternetAddress> _localIpv4 = const [];
   String? lastError;
+  String _lastPeersKey = '';
+  final _debugLog = <String>[];
 
   final _peers = <String, DropPeer>{};
   final _offers = <String, DropOffer>{};
@@ -346,6 +348,11 @@ class DropService {
   bool get seesHand => _seesHand;
   AirHolding? get holding => _holding;
   List<DropPeer> get peerList => _peers.values.toList();
+  int get debugHttpPort => _httpPort;
+  List<String> get debugIpv4 => [
+        for (final address in _localIpv4) address.address,
+      ];
+  List<String> get debugLog => List<String>.unmodifiable(_debugLog);
 
   AirPeerRole get localRole =>
       isPhoneSurface ? AirPeerRole.phone : AirPeerRole.desktop;
@@ -419,6 +426,12 @@ class DropService {
       _peerId = await DropPrefs.ensurePeerId();
       _httpPort = await _bindHttp();
       _localIpv4 = await dropLocalIpv4Addresses();
+      _note(
+        'start peer=$_peerId http=$_httpPort ipv4=${debugIpv4.join(',')}',
+      );
+      if (_localIpv4.isEmpty) {
+        _note('no ipv4 — UDP announce will wait for Wi‑Fi');
+      }
       _udp = await RawDatagramSocket.bind(
         InternetAddress.anyIPv4,
         udpPort,
@@ -443,9 +456,16 @@ class DropService {
           role: airRoleWire(localRole),
           os: airOsWire(localOs),
         );
+        await DropP2p.setScanHard(true);
+        _note(DropP2p.lastError == null
+            ? 'radio start ok'
+            : 'radio start ${DropP2p.lastError}');
+      } else {
+        _note('radio unsupported on this OS');
       }
     } catch (error) {
       lastError = '$error';
+      _note('start failed $error');
       await stop();
     }
   }
@@ -460,18 +480,39 @@ class DropService {
     _prune?.cancel();
     await _radio?.cancel();
     _radio = null;
+    await DropP2p.setScanHard(false);
     await DropP2p.stop();
     _udp?.close();
     await _http?.close(force: true);
     _http = null;
     _udp = null;
     _peers.clear();
+    _lastPeersKey = '';
     _lanListed = false;
     _localIpv4 = const [];
     _emitPeers();
   }
 
+  void _note(String line) {
+    final stamp = DateTime.now().toUtc().toIso8601String().substring(11, 19);
+    _debugLog.add('$stamp $line');
+    if (_debugLog.length > 80) {
+      _debugLog.removeRange(0, _debugLog.length - 80);
+    }
+  }
+
+  String _peersKey() {
+    final rows = [
+      for (final peer in peerList)
+        '${peer.id}|${peer.name}|${peer.host.address}|${peer.port}|${peer.viaRadio}',
+    ]..sort();
+    return rows.join(';');
+  }
+
   void _emitPeers() {
+    final key = _peersKey();
+    if (key == _lastPeersKey) return;
+    _lastPeersKey = key;
     peers.add(peerList);
     unawaited(DeviceChannel.publishPeers([
       for (final peer in peerList)
@@ -986,6 +1027,7 @@ class DropService {
         return;
       }
       final holding = AirHolding.fromJson(json['holding']);
+      final isNew = !_peers.containsKey(id);
       _peers[id] = DropPeer(
         id: id,
         name: json['name'] as String? ?? 'One Drop',
@@ -1002,6 +1044,7 @@ class DropService {
         holdingKind: holding?.kind,
       );
       _emitPeers();
+      if (isNew) _note('wifi peer ${json['name'] ?? id}');
     } catch (_) {}
   }
 
@@ -1040,7 +1083,27 @@ class DropService {
   void _onRadio(DropP2pSighting row) {
     if (!_running || row.peerId == _peerId) return;
     final existing = _peers[row.peerId];
-    if (existing != null && !existing.viaRadio) return;
+    if (existing != null && !existing.viaRadio) {
+      // Keep the LAN address (needed to send) but treat BLE as a heartbeat
+      // so a quiet UDP window does not yank them off Nearby.
+      _peers[row.peerId] = DropPeer(
+        id: existing.id,
+        name: existing.name,
+        host: existing.host,
+        port: existing.port,
+        lastSeen: DateTime.now(),
+        role: existing.role,
+        os: existing.os,
+        camera: existing.camera,
+        attention: existing.attention,
+        seesHand: existing.seesHand,
+        aimPeerId: existing.aimPeerId,
+        holdingCount: existing.holdingCount,
+        holdingKind: existing.holdingKind,
+      );
+      return;
+    }
+    final isNew = existing == null;
     _peers[row.peerId] = DropPeer(
       id: row.peerId,
       name: row.name,
@@ -1052,21 +1115,27 @@ class DropService {
       viaRadio: true,
     );
     _emitPeers();
+    if (isNew) _note('ble peer ${row.name}');
   }
 
   void _expirePeers() {
     final now = DateTime.now();
+    final lost = <String>[];
     _peers.removeWhere((_, peer) {
-      if (peer.viaRadio) {
-        return now.difference(peer.lastSeen) > dropRadioPeerTtl;
+      final gone = peer.viaRadio
+          ? now.difference(peer.lastSeen) > dropRadioPeerTtl
+          : !dropPeerStillHere(
+              host: peer.host,
+              lastSeen: peer.lastSeen,
+              now: now,
+              local: _localIpv4,
+            );
+      if (gone) {
+        lost.add('${peer.name}${peer.viaRadio ? ' ble' : ' wifi'}');
       }
-      return !dropPeerStillHere(
-        host: peer.host,
-        lastSeen: peer.lastSeen,
-        now: now,
-        local: _localIpv4,
-      );
+      return gone;
     });
+    if (lost.isNotEmpty) _note('lost ${lost.join(', ')}');
     _emitPeers();
   }
 

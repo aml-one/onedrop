@@ -1,7 +1,7 @@
 name: onedrop
 description: OneDrop — send any file to a nearby phone or PC.
 publish_to: "none"
-version: 1.0.1+10001
+version: 1.0.2+10002
 
 environment:
   sdk: ^3.11.4

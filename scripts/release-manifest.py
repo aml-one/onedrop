@@ -48,7 +48,7 @@ ENTRY_REQUIRED = (
 # The same fields minus `platform`, which is the key in version.json.
 VERSION_BLOCK_REQUIRED = ENTRY_REQUIRED[1:]
 
-DOWNLOADS_URL = "https://onedrop.aml.one/downloads"
+DOWNLOADS_URL = "https://aml.one/onedrop-ota"
 DOWNLOADS_PAGE_URL = "https://onedrop.aml.one/downloads"
 
 

@@ -359,7 +359,7 @@ class _FileExplorerScreenState extends State<FileExplorerScreen> {
                   _selected.isEmpty
                       ? l10n.fileExplorerSend
                       : '${l10n.fileExplorerSend} (${_selected.length})',
-                  style: const TextStyle(fontWeight: FontWeight.w800),
+                  style: const TextStyle(fontWeight: FontWeight.w700),
                 ),
               ),
             ),
@@ -505,7 +505,7 @@ class _FileExplorerSortSheetState extends State<_FileExplorerSortSheet> {
             l10n.fileExplorerSort,
             style: const TextStyle(
               fontSize: 18,
-              fontWeight: FontWeight.w800,
+              fontWeight: FontWeight.w700,
               color: kSettingsInk,
             ),
           ),
@@ -610,7 +610,7 @@ class _Breadcrumb extends StatelessWidget {
                     style: TextStyle(
                       fontSize: 13,
                       fontWeight: i == crumbs.length - 1
-                          ? FontWeight.w800
+                          ? FontWeight.w700
                           : FontWeight.w600,
                       color: i == crumbs.length - 1
                           ? kSettingsInk
@@ -716,7 +716,7 @@ class _EmptyState extends StatelessWidget {
               title,
               textAlign: TextAlign.center,
               style: const TextStyle(
-                fontWeight: FontWeight.w800,
+                fontWeight: FontWeight.w700,
                 fontSize: 16,
                 color: kSettingsInk,
               ),

@@ -60,7 +60,7 @@ class _Card extends StatelessWidget {
               _title(session),
               textAlign: TextAlign.center,
               style: TextStyle(
-                fontWeight: FontWeight.w800,
+                fontWeight: FontWeight.w700,
                 fontSize: 12.5,
                 color: ink,
               ),
