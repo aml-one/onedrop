@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-HOST="${ONEDROP_UT_HOST:-nova}"
+HOST="${ONEDROP_UT_HOST:-ambrus@192.168.31.230}"
 DEST="${ONEDROP_UT_DEST:-/Users/ambrus/src/onedrop-ut-current}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 

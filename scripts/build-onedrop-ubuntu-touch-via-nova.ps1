@@ -1,6 +1,6 @@
 # Sync OneDrop to Nova and build Ubuntu Touch arm64 via Lima (messageme-ut).
 param(
-    [string]$MacHost = $(if ($env:ONEDROP_UT_HOST) { $env:ONEDROP_UT_HOST } elseif ($env:ONEDROP_MAC_HOST) { $env:ONEDROP_MAC_HOST } else { 'nova' }),
+    [string]$MacHost = $(if ($env:ONEDROP_UT_HOST) { $env:ONEDROP_UT_HOST } elseif ($env:ONEDROP_MAC_HOST) { $env:ONEDROP_MAC_HOST } else { 'ambrus@192.168.31.230' }),
     [string]$RemoteRepo = $(if ($env:ONEDROP_UT_DEST) { $env:ONEDROP_UT_DEST } else { '/Users/ambrus/src/onedrop-ut-current' })
 )
 
@@ -24,11 +24,12 @@ New-Item -ItemType Directory -Path $dist -Force | Out-Null
 
 $ssh = Get-OpenSshBin -Name ssh
 $scp = Get-OpenSshBin -Name scp
-# Windows OpenSSH often cannot resolve the LAN name `nova`; WSL /etc/hosts can.
-# Keep the hostname as `nova` and run ssh/scp inside Ubuntu, matching the macOS builder.
+# Nova is a fixed LAN IP. Windows OpenSSH cannot resolve the name `nova`.
 $useWslSsh = $MacHost -eq 'nova'
 if ($useWslSsh) {
     Write-Host "Using WSL ssh for nova" -ForegroundColor DarkGray
+} else {
+    Write-Host "Using OpenSSH for $MacHost" -ForegroundColor DarkGray
 }
 
 $wslRoot = (& wsl.exe -d Ubuntu wslpath -a ($root -replace '\\', '/')).Trim()

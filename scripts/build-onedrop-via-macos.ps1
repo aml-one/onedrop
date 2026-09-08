@@ -1,6 +1,6 @@
 # Sync One Drop to a configured macOS host, build Intel + Apple Silicon DMGs, copy them to onedrop/dist.
 param(
-    [string]$MacHost = $(if ($env:ONEDROP_MAC_HOST) { $env:ONEDROP_MAC_HOST } elseif ($env:ONEAUTH_MAC_HOST) { $env:ONEAUTH_MAC_HOST } else { 'nova' }),
+    [string]$MacHost = $(if ($env:ONEDROP_MAC_HOST) { $env:ONEDROP_MAC_HOST } elseif ($env:ONEAUTH_MAC_HOST) { $env:ONEAUTH_MAC_HOST } else { 'ambrus@192.168.31.230' }),
     [string]$MacRoot = $(if ($env:ONEDROP_MAC_ROOT) { $env:ONEDROP_MAC_ROOT } else { '~/src/onedrop-macos' }),
     [switch]$Clean
 )
@@ -19,15 +19,11 @@ function Get-OpenSshBin {
 }
 
 if (-not $MacHost) {
-    throw 'Set ONEDROP_MAC_HOST or pass -MacHost (default: nova).'
+    throw 'Set ONEDROP_MAC_HOST or pass -MacHost (default: ambrus@192.168.31.230).'
 }
-# Windows OpenSSH often cannot resolve the LAN name `nova`; WSL /etc/hosts can.
 if ($MacHost -eq 'nova') {
-    $resolved = ((wsl.exe -d Ubuntu -- bash -lc "getent hosts nova | awk '{print `$1}'") -replace "`0", '').Trim()
-    if ($resolved -match '^\d+\.\d+\.\d+\.\d+$') {
-        $MacHost = "ambrus@$resolved"
-        Write-Host "Resolved nova to $MacHost" -ForegroundColor DarkGray
-    }
+    $MacHost = 'ambrus@192.168.31.230'
+    Write-Host "Nova is ambrus@192.168.31.230" -ForegroundColor DarkGray
 }
 if ($MacRoot -notmatch '^[A-Za-z0-9_./~-]+$') {
     throw 'ONEDROP_MAC_ROOT may contain only letters, numbers, _, ., /, -, and ~.'
@@ -77,7 +73,7 @@ tar -czf '$wslUi' --exclude=aml_ui/.dart_tool --exclude=aml_ui/build aml_ui
     if ($LASTEXITCODE -ne 0) { throw 'Could not package One Drop macOS sources.' }
 
     $wslDist = ((wsl.exe -d Ubuntu wslpath -a ($dist -replace '\\', '/')) -replace "`0", '').Trim()
-    $sshHost = if ($MacHost -match 'nova|192\.168\.31\.130') { 'nova' } else { $MacHost }
+    $sshHost = if ($MacHost -match 'nova|192\.168\.31\.(130|230)') { 'ambrus@192.168.31.230' } else { $MacHost }
     Write-Host "Uploading sources to ${sshHost} via WSL ssh..." -ForegroundColor Cyan
     & wsl.exe -d Ubuntu -- scp -o StrictHostKeyChecking=accept-new $wslSrc "${sshHost}:${remoteSrc}"
     if ($LASTEXITCODE -ne 0) { throw 'One Drop source upload to macOS failed.' }
