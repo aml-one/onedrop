@@ -298,6 +298,12 @@ class DropP2pPlugin {
       status[EncodableValue("beaconBytes")] =
           EncodableValue(static_cast<int>(beacon_.size()));
       status[EncodableValue("watching")] = EncodableValue(watcher_ != nullptr);
+      status[EncodableValue("advertising")] =
+          EncodableValue(advertise_status_.load() == 2);
+      status[EncodableValue("advertiseStatus")] =
+          EncodableValue(advertise_status_.load());
+      status[EncodableValue("advertiseExtended")] =
+          EncodableValue(advertise_extended_.load());
       result->Success(EncodableValue(status));
       return;
     }
@@ -337,19 +343,77 @@ class DropP2pPlugin {
     StartWatch();
   }
 
-  void StartAdvertise() {
+  void AppendManufacturer(uint16_t company, const std::vector<uint8_t>& bytes) {
+    if (bytes.empty() || !publisher_) return;
+    wadv::BluetoothLEManufacturerData data;
+    data.CompanyId(company);
+    data.Data(BytesToBuffer(BytesToString(bytes.data(), bytes.size())));
+    publisher_.Advertisement().ManufacturerData().Append(data);
+  }
+
+  void StopPublisher() {
     try {
+      if (publisher_) publisher_.Stop();
+    } catch (...) {
+    }
+    publisher_ = nullptr;
+  }
+
+  void BindAdvertiseStatus() {
+    if (!publisher_) return;
+    publisher_.StatusChanged(
+        [this](wadv::BluetoothLEAdvertisementPublisher const& pub,
+               auto const&) {
+          const auto status = pub.Status();
+          advertise_status_ = static_cast<int>(status);
+          if (status ==
+                  wadv::BluetoothLEAdvertisementPublisherStatus::Aborted &&
+              advertise_extended_.load() && !advertise_retrying_) {
+            advertise_retrying_ = true;
+            RunOnWorker([this] { StartAdvertiseLegacy(); });
+          }
+        });
+  }
+
+  void StartAdvertise() {
+    advertise_retrying_ = false;
+    try {
+      StopPublisher();
       publisher_ = wadv::BluetoothLEAdvertisementPublisher();
-      wadv::BluetoothLEManufacturerData data;
-      data.CompanyId(kCompany);
-      data.Data(BytesToBuffer(BytesToString(beacon_.data(), beacon_.size())));
-      publisher_.Advertisement().ManufacturerData().Append(data);
-      if (!name_.empty()) {
-        try {
-          publisher_.Advertisement().LocalName(Widen(name_.substr(0, 8)));
-        } catch (...) {
+      // Phones already read company 0x0A11. Put the display name in that same
+      // blob (after the 22-byte core) so Xiaomi scans that drop a second
+      // manufacturer id or LocalName still show LIV, not "One Drop".
+      std::vector<uint8_t> payload = beacon_;
+      bool extended = false;
+      try {
+        publisher_.UseExtendedAdvertisement(true);
+        payload.insert(payload.end(), name_bytes_.begin(), name_bytes_.end());
+        if (!name_.empty()) {
+          try {
+            publisher_.Advertisement().LocalName(Widen(name_.substr(0, 8)));
+          } catch (...) {
+          }
         }
+        extended = true;
+      } catch (...) {
+        payload = beacon_;
       }
+      AppendManufacturer(kCompany, payload);
+      advertise_extended_ = extended;
+      BindAdvertiseStatus();
+      publisher_.Start();
+    } catch (...) {
+      StartAdvertiseLegacy();
+    }
+  }
+
+  void StartAdvertiseLegacy() {
+    try {
+      StopPublisher();
+      publisher_ = wadv::BluetoothLEAdvertisementPublisher();
+      AppendManufacturer(kCompany, beacon_);
+      advertise_extended_ = false;
+      BindAdvertiseStatus();
       publisher_.Start();
     } catch (...) {
     }
@@ -386,7 +450,15 @@ class DropP2pPlugin {
     while (!id.empty() && id.back() == '\0') id.pop_back();
     if (id.empty() || id == peer_id_) return;
     const int flags = beacon[3];
-    const std::string role = (flags & 0x03) == 1 ? "desktop" : "phone";
+    std::string role = "phone";
+    switch (flags & 0x03) {
+      case 1:
+        role = "desktop";
+        break;
+      case 2:
+        role = "tablet";
+        break;
+    }
     std::string os = "other";
     switch ((flags >> 2) & 0x07) {
       case 1:
@@ -402,16 +474,24 @@ class DropP2pPlugin {
         os = "macos";
         break;
     }
-    std::string display = name.empty() ? "One Drop" : BytesToString(name.data(), name.size());
-    if (display.empty() || display == "One Drop") {
-      const auto local = Narrow(std::wstring(args.Advertisement().LocalName()));
-      if (!local.empty()) display = local;
+    const bool files = (flags & 0x20) != 0;
+    std::string display;
+    if (beacon.size() > 22) {
+      display = BytesToString(beacon.data() + 22, beacon.size() - 22);
+      while (!display.empty() && display.back() == '\0') display.pop_back();
     }
+    if (display.empty()) {
+      display = name.empty() ? "" : BytesToString(name.data(), name.size());
+    }
+    if (display.empty()) {
+      display = Narrow(std::wstring(args.Advertisement().LocalName()));
+    }
+    if (display.empty()) display = "One Drop";
     {
       std::lock_guard<std::mutex> lock(mutex_);
       addresses_[id] = args.BluetoothAddress();
     }
-    PostUi([this, id, display, port, role, os] {
+    PostUi([this, id, display, port, role, os, files] {
       std::lock_guard<std::mutex> lock(mutex_);
       if (!sink_) return;
       sink_->Success(EncodableValue(EncodableMap{
@@ -420,6 +500,7 @@ class DropP2pPlugin {
           {EncodableValue("port"), EncodableValue(port)},
           {EncodableValue("role"), EncodableValue(role)},
           {EncodableValue("os"), EncodableValue(os)},
+          {EncodableValue("files"), EncodableValue(files)},
       }));
     });
   }
@@ -752,10 +833,7 @@ class DropP2pPlugin {
       if (watcher_) watcher_.Stop();
     } catch (...) {
     }
-    try {
-      if (publisher_) publisher_.Stop();
-    } catch (...) {
-    }
+    StopPublisher();
     try {
       if (provider_) provider_.StopAdvertising();
     } catch (...) {
@@ -790,6 +868,9 @@ class DropP2pPlugin {
   std::string ssid_;
   std::string psk_;
 
+  std::atomic<int> advertise_status_{0};
+  std::atomic<bool> advertise_extended_{false};
+  bool advertise_retrying_ = false;
   wadv::BluetoothLEAdvertisementPublisher publisher_{nullptr};
   wadv::BluetoothLEAdvertisementWatcher watcher_{nullptr};
   wgatt::GattServiceProvider provider_{nullptr};

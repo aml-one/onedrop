@@ -16,6 +16,9 @@ const dropP2pLinkUuid = 'a11d0d01-6d65-4f6e-6472-6f70426c6533';
 
 const dropRadioPeerTtl = Duration(seconds: 30);
 
+/// Flag bit 5: this peer is OneDrop and accepts files, not Gallery photos-only.
+const dropP2pFilesFlag = 0x20;
+
 class DropP2pBeacon {
   const DropP2pBeacon({
     required this.peerId,
@@ -23,6 +26,7 @@ class DropP2pBeacon {
     required this.role,
     required this.os,
     this.name = '',
+    this.files = false,
   });
 
   final String peerId;
@@ -30,10 +34,22 @@ class DropP2pBeacon {
   final String role;
   final String os;
   final String name;
+  final bool files;
 }
 
-int packDropP2pFlags({required String role, required String os}) {
-  final roleBits = role == 'desktop' ? 1 : 0;
+int packDropP2pFlags({
+  required String role,
+  required String os,
+  bool files = false,
+}) {
+  // Role occupies the low two bits: 0 phone, 1 desktop, 2 tablet.
+  // Older clients treat anything other than 1 as phone.
+  // OS occupies bits 2–4. Bit 5 is OneDrop (files). Missing = Gallery.
+  final roleBits = switch (role) {
+    'desktop' => 1,
+    'tablet' => 2,
+    _ => 0,
+  };
   final osBits = switch (os) {
     'android' => 1,
     'windows' => 2,
@@ -41,11 +57,15 @@ int packDropP2pFlags({required String role, required String os}) {
     'macos' => 4,
     _ => 0,
   };
-  return roleBits | (osBits << 2);
+  return roleBits | (osBits << 2) | (files ? dropP2pFilesFlag : 0);
 }
 
-({String role, String os}) unpackDropP2pFlags(int flags) {
-  final role = (flags & 0x03) == 1 ? 'desktop' : 'phone';
+({String role, String os, bool files}) unpackDropP2pFlags(int flags) {
+  final role = switch (flags & 0x03) {
+    1 => 'desktop',
+    2 => 'tablet',
+    _ => 'phone',
+  };
   final os = switch ((flags >> 2) & 0x07) {
     1 => 'android',
     2 => 'windows',
@@ -53,7 +73,7 @@ int packDropP2pFlags({required String role, required String os}) {
     4 => 'macos',
     _ => 'other',
   };
-  return (role: role, os: os);
+  return (role: role, os: os, files: (flags & dropP2pFilesFlag) != 0);
 }
 
 Uint8List encodeDropP2pBeacon({
@@ -61,12 +81,13 @@ Uint8List encodeDropP2pBeacon({
   required int port,
   required String role,
   required String os,
+  bool files = false,
 }) {
   final bytes = Uint8List(22);
   bytes[0] = 0x4F; // O
   bytes[1] = 0x44; // D
   bytes[2] = dropP2pVersion;
-  bytes[3] = packDropP2pFlags(role: role, os: os);
+  bytes[3] = packDropP2pFlags(role: role, os: os, files: files);
   bytes[4] = (port >> 8) & 0xFF;
   bytes[5] = port & 0xFF;
   final id = utf8.encode(peerId);
@@ -88,12 +109,19 @@ DropP2pBeacon? decodeDropP2pBeacon(Uint8List data, {String name = ''}) {
   final peerId = utf8.decode(data.sublist(6, end), allowMalformed: true).trim();
   if (peerId.isEmpty) return null;
   final flags = unpackDropP2pFlags(data[3]);
+  final embedded = data.length > 22
+      ? decodeDropP2pName(Uint8List.fromList(data.sublist(22)))
+      : '';
+  final resolved = embedded.isNotEmpty
+      ? embedded
+      : (name.trim().isEmpty ? 'One Drop' : name.trim());
   return DropP2pBeacon(
     peerId: peerId,
     port: port,
     role: flags.role,
     os: flags.os,
-    name: name,
+    name: resolved,
+    files: flags.files,
   );
 }
 

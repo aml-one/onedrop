@@ -55,6 +55,12 @@ void main() {
     );
     expect(
       dropDeviceTypeLabel(
+        peer(role: AirPeerRole.tablet, os: AirPeerOs.android),
+      ),
+      'Tablet',
+    );
+    expect(
+      dropDeviceTypeLabel(
         peer(role: AirPeerRole.desktop, os: AirPeerOs.windows),
       ),
       'PC',
@@ -71,6 +77,30 @@ void main() {
       ),
       'Linux',
     );
+  });
+
+  test('nearby rows name OneDrop vs Gallery', () {
+    DropPeer peer({required AirDropApp app}) {
+      return DropPeer(
+        id: 'p',
+        name: 'Liv',
+        host: InternetAddress.loopbackIPv4,
+        port: 4071,
+        lastSeen: DateTime.fromMillisecondsSinceEpoch(0),
+        app: app,
+      );
+    }
+
+    final files = peer(app: AirDropApp.onedrop);
+    final photos = peer(app: AirDropApp.gallery);
+    expect(dropAppLabel(files), 'OneDrop');
+    expect(dropAppLabel(photos), 'Gallery');
+    expect(dropPeerAppLine(files), 'OneDrop · files');
+    expect(dropPeerAppLine(photos), 'Gallery · photos');
+    expect(dropPeerAppLine(files, compact: true), 'OneDrop');
+    expect(dropPeerAppLine(photos, known: true), 'Known · Gallery · photos');
+    expect(files.acceptsFiles, isTrue);
+    expect(photos.acceptsFiles, isFalse);
   });
 
   test('declined copy names One Drop', () {

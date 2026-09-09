@@ -19,6 +19,7 @@ import 'screens/photo_picker_screen.dart';
 import 'services/air_grab_session.dart';
 import 'services/drop_service.dart';
 import 'widgets/air_grab_overlay.dart';
+import 'widgets/drop_app_caption.dart';
 import 'widgets/media_quick_preview.dart';
 import 'widgets/phone_home.dart';
 import 'widgets/phone_settings.dart';
@@ -888,13 +889,10 @@ class _PeerRow extends StatelessWidget {
                       ),
                     ),
                     SizedBox(height: phone ? 3 : 0),
-                    Text(
-                      known ? 'Known' : (peer.viaRadio ? 'Nearby' : 'Wi‑Fi'),
-                      style: TextStyle(
-                        fontWeight: FontWeight.w600,
-                        fontSize: phone ? 13 : 11,
-                        color: AmlTheme.mutedOf(context),
-                      ),
+                    DropAppCaption(
+                      peer: peer,
+                      known: known,
+                      fontSize: phone ? 13 : 11,
                     ),
                   ],
                 ),

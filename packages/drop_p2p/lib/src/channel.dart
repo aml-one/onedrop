@@ -23,6 +23,7 @@ class DropP2pSighting {
     required this.port,
     required this.role,
     required this.os,
+    this.files = false,
   });
 
   final String peerId;
@@ -30,6 +31,7 @@ class DropP2pSighting {
   final int port;
   final String role;
   final String os;
+  final bool files;
 
   static DropP2pSighting? fromMap(Object? raw) {
     if (raw is! Map) return null;
@@ -44,6 +46,7 @@ class DropP2pSighting {
       port: port,
       role: '${raw['role'] ?? 'phone'}',
       os: '${raw['os'] ?? 'other'}',
+      files: raw['files'] == true,
     );
   }
 }
@@ -75,6 +78,7 @@ class DropP2p {
     required int port,
     required String role,
     required String os,
+    bool files = false,
   }) async {
     if (!supported) return;
     lastError = null;
@@ -90,6 +94,7 @@ class DropP2p {
           port: port,
           role: role,
           os: os,
+          files: files,
         ),
         'nameBytes': encodeDropP2pName(name),
       });

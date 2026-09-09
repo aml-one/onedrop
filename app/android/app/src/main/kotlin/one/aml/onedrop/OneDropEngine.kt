@@ -1,5 +1,7 @@
 ﻿package one.aml.onedrop
 
+import android.annotation.SuppressLint
+import android.bluetooth.BluetoothManager
 import android.content.ClipData
 import android.content.Context
 import android.content.Intent
@@ -225,28 +227,63 @@ object DeviceBridge {
     private var peerCache: List<Map<String, Any>> = emptyList()
 
     fun deviceName(ctx: Context?): String {
-        if (ctx == null) return Build.MODEL?.trim().orEmpty()
+        val model = Build.MODEL?.trim().orEmpty()
+        if (ctx == null) {
+            return if (isJunkDeviceLabel(model)) amazonFallback().orEmpty() else model
+        }
         val resolver = ctx.contentResolver
         val fromGlobal = try {
             Settings.Global.getString(resolver, Settings.Global.DEVICE_NAME)
         } catch (_: Exception) {
             null
         }
-        val fromBluetooth = try {
+        val fromBluetoothSetting = try {
             Settings.Secure.getString(resolver, "bluetooth_name")
         } catch (_: Exception) {
             null
         }
+        // Fire OS stores KFTUWI in DEVICE_NAME. Bluetooth is "Fire Tablet".
         val candidates = listOfNotNull(
+            bluetoothAdapterName(ctx),
+            fromBluetoothSetting,
             fromGlobal,
-            fromBluetooth,
-            Build.MODEL,
-            Build.MANUFACTURER,
+            amazonFallback(),
+            model,
         )
         return candidates
             .map { it.trim() }
-            .firstOrNull { it.isNotEmpty() && !it.equals("localhost", ignoreCase = true) }
+            .firstOrNull { it.isNotEmpty() && !isJunkDeviceLabel(it) }
             .orEmpty()
+    }
+
+    /// Android's tablet qualifier. Honor / Fire HD sit at 600+; phones do not.
+    fun isTablet(ctx: Context?): Boolean {
+        val host = ctx ?: return false
+        return host.resources.configuration.smallestScreenWidthDp >= 600
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun bluetoothAdapterName(ctx: Context): String? {
+        return try {
+            val manager = ctx.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
+            manager?.adapter?.name?.trim()?.takeIf { it.isNotEmpty() }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun amazonFallback(): String? {
+        val maker = Build.MANUFACTURER.orEmpty()
+        val brand = Build.BRAND.orEmpty()
+        if (!maker.equals("Amazon", true) && !brand.equals("Amazon", true)) return null
+        return "Fire Tablet"
+    }
+
+    private fun isJunkDeviceLabel(name: String): Boolean {
+        val n = name.trim()
+        if (n.isEmpty() || n.equals("localhost", ignoreCase = true)) return true
+        // Amazon Fire board codes: KFTUWI, KFTRWI, KFONWI, …
+        return n.matches(Regex("^KF[A-Z0-9]{3,8}$"))
     }
 
     fun cachedPeers(): List<Map<String, Any>> = peerCache
@@ -277,6 +314,7 @@ object DeviceBridge {
             when (call.method) {
                 "getSdkInt" -> result.success(Build.VERSION.SDK_INT)
                 "getDeviceName" -> result.success(deviceName(this.app ?: host))
+                "isTablet" -> result.success(isTablet(this.app ?: host))
                 "getManufacturer" ->
                     result.success(Build.MANUFACTURER?.trim().orEmpty())
                 "isGalleryInstalled" ->

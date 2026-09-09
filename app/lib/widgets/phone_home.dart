@@ -12,6 +12,7 @@ import '../core/panel_window.dart';
 import '../screens/file_explorer_screen.dart';
 import '../screens/photo_picker_screen.dart';
 import '../services/drop_service.dart';
+import 'drop_app_caption.dart';
 
 /// Full-screen nearby stage for the phone — a drop well with orbiting peers.
 class PhoneNearbyStage extends StatelessWidget {
@@ -819,47 +820,64 @@ class _OrbitPeer extends StatelessWidget {
               SizedBox(
                 width: 56,
                 height: 56,
-                child: DecoratedBox(
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    gradient: LinearGradient(
-                      begin: Alignment.topLeft,
-                      end: Alignment.bottomRight,
-                      colors: [
-                        Color.lerp(Colors.white, accent, 0.22)!,
-                        accent,
-                      ],
-                    ),
-                    border: Border.all(color: Colors.white, width: 2.5),
-                    boxShadow: [
-                      BoxShadow(
-                        color: accent.withValues(alpha: 0.36),
-                        blurRadius: 14,
-                        offset: const Offset(0, 5),
-                      ),
-                    ],
-                  ),
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 11,
-                      vertical: 16,
-                    ),
-                    child: FittedBox(
-                      fit: BoxFit.scaleDown,
-                      child: Text(
-                        dropDeviceTypeLabel(peer),
-                        maxLines: 1,
-                        textAlign: TextAlign.center,
-                        style: const TextStyle(
-                          fontWeight: FontWeight.w600,
-                          fontSize: 12,
-                          height: 1,
-                          letterSpacing: 0.2,
-                          color: Colors.white,
+                child: Stack(
+                  clipBehavior: Clip.none,
+                  children: [
+                    Positioned.fill(
+                      child: DecoratedBox(
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          gradient: LinearGradient(
+                            begin: Alignment.topLeft,
+                            end: Alignment.bottomRight,
+                            colors: [
+                              Color.lerp(Colors.white, accent, 0.22)!,
+                              accent,
+                            ],
+                          ),
+                          border: Border.all(color: Colors.white, width: 2.5),
+                          boxShadow: [
+                            BoxShadow(
+                              color: accent.withValues(alpha: 0.36),
+                              blurRadius: 14,
+                              offset: const Offset(0, 5),
+                            ),
+                          ],
+                        ),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 11,
+                            vertical: 16,
+                          ),
+                          child: FittedBox(
+                            fit: BoxFit.scaleDown,
+                            child: Text(
+                              dropDeviceTypeLabel(peer),
+                              maxLines: 1,
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w600,
+                                fontSize: 12,
+                                height: 1,
+                                letterSpacing: 0.2,
+                                color: Colors.white,
+                              ),
+                            ),
+                          ),
                         ),
                       ),
                     ),
-                  ),
+                    if (known)
+                      const Positioned(
+                        right: -1,
+                        bottom: -1,
+                        child: Icon(
+                          Icons.check_circle_rounded,
+                          size: 16,
+                          color: AmlTheme.mint,
+                        ),
+                      ),
+                  ],
                 ),
               ),
               const SizedBox(height: 6),
@@ -874,13 +892,12 @@ class _OrbitPeer extends StatelessWidget {
                   color: AmlTheme.inkOf(context),
                 ),
               ),
-              Text(
-                known ? 'Known' : (peer.viaRadio ? 'Nearby' : 'Wi‑Fi'),
-                style: TextStyle(
-                  fontWeight: FontWeight.w600,
-                  fontSize: 10,
-                  color: AmlTheme.mutedOf(context),
-                ),
+              const SizedBox(height: 2),
+              DropAppCaption(
+                peer: peer,
+                compact: true,
+                fontSize: 10,
+                center: true,
               ),
             ],
           ),

@@ -97,4 +97,52 @@ void main() {
       isTrue,
     );
   });
+
+  test('BLE placeholder 0.0.0.0 is not a LAN unicast target', () {
+    expect(dropIsUsableLanIpv4(InternetAddress.anyIPv4), isFalse);
+    expect(dropIsUsableLanIpv4(InternetAddress('192.168.31.197')), isTrue);
+  });
+
+  test('remembered Ethernet peers are unicast on the same /24', () {
+    final local = [InternetAddress('192.168.31.197')];
+    final map = <String, InternetAddress>{};
+    dropAddLanUnicastTargets(
+      map,
+      local: local,
+      extras: [
+        InternetAddress.anyIPv4,
+        InternetAddress('192.168.31.44'),
+        InternetAddress('10.0.0.8'),
+      ],
+    );
+    expect(map.keys.toList(), ['192.168.31.44']);
+  });
+
+  test('mobile radios are not treated as LAN', () {
+    expect(dropIsCellularInterface('rmnet_data0'), isTrue);
+    expect(dropIsCellularInterface('ccmni0'), isTrue);
+    expect(dropIsCellularInterface('wlan0'), isFalse);
+    expect(dropIsCellularInterface('ap0'), isFalse);
+  });
+
+  test('UDP hellos are kept when this phone has no LAN address yet', () {
+    expect(
+      dropShouldAcceptLanHello(InternetAddress('192.168.1.10'), const []),
+      isTrue,
+    );
+    expect(
+      dropShouldAcceptLanHello(
+        InternetAddress('192.168.1.10'),
+        [InternetAddress('192.168.1.20')],
+      ),
+      isTrue,
+    );
+    expect(
+      dropShouldAcceptLanHello(
+        InternetAddress('192.168.1.10'),
+        [InternetAddress('10.64.0.2')],
+      ),
+      isFalse,
+    );
+  });
 }

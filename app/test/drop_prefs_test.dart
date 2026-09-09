@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:onedrop/core/device_name.dart';
 import 'package:onedrop/core/drop_prefs.dart';
@@ -25,6 +27,12 @@ void main() {
     expect(DropPrefs.autoAccepts('anyone'), isTrue);
   });
 
+  test('Amazon Fire board codes are not advertised as this device', () {
+    expect(isJunkDisplayName('KFTUWI'), isTrue);
+    expect(isJunkDisplayName('Fire Tablet'), isFalse);
+    expect(isJunkDisplayName('Mi17'), isFalse);
+  });
+
   test('localhost is not advertised as this device', () async {
     expect(isJunkDisplayName('localhost'), isTrue);
     expect(isJunkDisplayName('Studio-PC'), isFalse);
@@ -42,16 +50,24 @@ void main() {
   });
 
   test('photos go to the camera roll or the OneDrop folder', () async {
-    expect(DropPrefs.imagesToCameraRoll, isTrue);
-    expect(DropPrefs.mediaSavePath, DropPrefs.cameraRollPath);
     expect(
       DropPrefs.androidCameraRollPath,
       '/storage/emulated/0/DCIM/Camera',
     );
-    await DropPrefs.setImagesToCameraRoll(false);
-    expect(DropPrefs.imagesToCameraRoll, isFalse);
-    expect(DropPrefs.mediaSavePath, DropPrefs.mediaInboxPath);
-    expect(DropPrefs.mediaInboxPath.contains('OneDrop'), isTrue);
+    if (Platform.isAndroid) {
+      expect(DropPrefs.imagesToCameraRoll, isTrue);
+      expect(DropPrefs.mediaSavePath, DropPrefs.cameraRollPath);
+      await DropPrefs.setImagesToCameraRoll(false);
+      expect(DropPrefs.mediaSavePath, DropPrefs.mediaInboxPath);
+      expect(DropPrefs.mediaInboxPath.contains('OneDrop'), isTrue);
+      return;
+    }
+    expect(DropPrefs.mediaSavePath, DropPrefs.inboxPath);
+    await DropPrefs.setInboxPath(r'C:\Users\ambru\OneDrive\Pictures\OneDrop');
+    expect(
+      DropPrefs.mediaSavePath,
+      r'C:\Users\ambru\OneDrive\Pictures\OneDrop',
+    );
   });
 
   test('opening File Explorer on receive is off until turned on', () async {
@@ -78,6 +94,17 @@ void main() {
     expect(
       DropPrefs.shouldAutoAccept(peerId: 'pc', airGrab: false),
       isFalse,
+    );
+  });
+
+  test('remembers LAN IPs so Ethernet can unicast after ARP expires', () async {
+    expect(DropPrefs.rememberedLanIpv4, isEmpty);
+    await DropPrefs.rememberLanIpv4(InternetAddress('192.168.31.44'));
+    await DropPrefs.rememberLanIpv4(InternetAddress('192.168.31.101'));
+    await DropPrefs.rememberLanIpv4(InternetAddress.anyIPv4);
+    expect(
+      DropPrefs.rememberedLanIpv4.map((a) => a.address).toList(),
+      ['192.168.31.101', '192.168.31.44'],
     );
   });
 }

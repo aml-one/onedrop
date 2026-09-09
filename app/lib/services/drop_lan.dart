@@ -46,7 +46,21 @@ bool dropIsVirtualInterface(String name) {
   return needles.any(n.contains);
 }
 
-bool _isUsableLanIpv4(InternetAddress addr) {
+/// Mobile data radios. A phone on Wi‑Fi + 4G/5G lists `rmnet` / `ccmni`
+/// with a 10.x address; treating that as LAN drops every 192.168 hello.
+bool dropIsCellularInterface(String name) {
+  final n = name.toLowerCase();
+  const needles = [
+    'rmnet',
+    'ccmni',
+    'wwan',
+    'clat',
+    'dummy',
+  ];
+  return needles.any(n.contains);
+}
+
+bool dropIsUsableLanIpv4(InternetAddress addr) {
   if (addr.type != InternetAddressType.IPv4 || addr.isLoopback) return false;
   final b = addr.rawAddress;
   if (b.length != 4) return false;
@@ -54,13 +68,18 @@ bool _isUsableLanIpv4(InternetAddress addr) {
   if (b[0] == 169 && b[1] == 254) return false;
   // Carrier-grade NAT (phone mobile data)
   if (b[0] == 100 && b[1] >= 64 && b[1] <= 127) return false;
+  // BLE sightings use 0.0.0.0 until a UDP hello fills the address.
+  if (b[0] == 0 && b[1] == 0 && b[2] == 0 && b[3] == 0) return false;
   return true;
 }
+
+bool _isUsableLanIpv4(InternetAddress addr) => dropIsUsableLanIpv4(addr);
 
 List<InternetAddress> dropLocalIpv4(Iterable<NetworkInterface> ifaces) {
   return [
     for (final iface in ifaces)
-      if (!dropIsVirtualInterface(iface.name))
+      if (!dropIsVirtualInterface(iface.name) &&
+          !dropIsCellularInterface(iface.name))
         for (final addr in iface.addresses)
           if (_isUsableLanIpv4(addr)) addr,
   ];
@@ -89,6 +108,17 @@ bool dropHostOnLocalLan(InternetAddress host, Iterable<InternetAddress> local) {
     if (b[0] == hb[0] && b[1] == hb[1] && b[2] == hb[2]) return true;
   }
   return false;
+}
+
+/// Accept a UDP hello. Empty local list (5G-only, Wi‑Fi still coming up)
+/// must not drop packets — BLE still needs Wi‑Fi hellos when they arrive.
+bool dropShouldAcceptLanHello(
+  InternetAddress host,
+  Iterable<InternetAddress> local,
+) {
+  final lan = local.toList(growable: false);
+  if (lan.isEmpty) return true;
+  return dropHostOnLocalLan(host, lan);
 }
 
 /// Gallery keeps its own peer id, so its hello on this phone looks like
@@ -218,10 +248,24 @@ void _collectNeighborIps(String text, Map<String, InternetAddress> out) {
   }
 }
 
+/// Unicast extras that sit on the same /24. Skips BLE placeholders.
+void dropAddLanUnicastTargets(
+  Map<String, InternetAddress> map, {
+  required Iterable<InternetAddress> local,
+  required Iterable<InternetAddress> extras,
+}) {
+  for (final peer in extras) {
+    if (!dropIsUsableLanIpv4(peer)) continue;
+    if (!dropHostOnLocalLan(peer, local)) continue;
+    map[peer.address] = peer;
+  }
+}
+
 /// Broadcast + ARP-neighbor unicast targets for a hello packet.
 Future<List<InternetAddress>> dropAnnounceDestinations({
   required Iterable<InternetAddress> local,
   Iterable<InternetAddress> knownPeers = const [],
+  Iterable<InternetAddress> remembered = const [],
 }) async {
   final map = <String, InternetAddress>{
     for (final d in dropBroadcastDestinationsFrom(local)) d.address: d,
@@ -229,10 +273,7 @@ Future<List<InternetAddress>> dropAnnounceDestinations({
   for (final n in await dropLanNeighborIpv4(local)) {
     map[n.address] = n;
   }
-  for (final peer in knownPeers) {
-    if (peer.type != InternetAddressType.IPv4) continue;
-    if (!dropHostOnLocalLan(peer, local)) continue;
-    map[peer.address] = peer;
-  }
+  dropAddLanUnicastTargets(map, local: local, extras: knownPeers);
+  dropAddLanUnicastTargets(map, local: local, extras: remembered);
   return map.values.toList();
 }

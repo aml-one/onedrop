@@ -1,5 +1,7 @@
 import 'dart:io';
 
+import 'device_channel.dart';
+
 /// OS host strings that must never be advertised as this device.
 bool isJunkDisplayName(String raw) {
   final n = raw.trim().toLowerCase();
@@ -16,11 +18,14 @@ bool isJunkDisplayName(String raw) {
     'this mac',
     'this linux pc',
     'this phone',
+    'this tablet',
     'name this pc',
     'name this computer',
   };
   if (junk.contains(n)) return true;
   if (n.startsWith('localhost')) return true;
+  // Amazon Fire board codes (KFTUWI), not the Bluetooth name "Fire Tablet".
+  if (RegExp(r'^KF[A-Z0-9]{3,8}$').hasMatch(raw.trim())) return true;
   return false;
 }
 
@@ -33,7 +38,9 @@ String cleanDisplayName(String raw) {
 }
 
 String fallbackDisplayName() {
-  if (Platform.isAndroid) return 'This phone';
+  if (Platform.isAndroid) {
+    return DeviceChannel.isTabletCached ? 'This tablet' : 'This phone';
+  }
   if (Platform.isMacOS) return 'This Mac';
   if (Platform.isLinux) return 'This Linux PC';
   return 'This PC';

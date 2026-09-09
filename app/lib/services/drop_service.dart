@@ -59,6 +59,7 @@ class DropPeer {
     this.holdingCount,
     this.holdingKind,
     this.viaRadio = false,
+    this.app = AirDropApp.gallery,
   });
 
   final String id;
@@ -75,6 +76,9 @@ class DropPeer {
   final int? holdingCount;
   final String? holdingKind;
   final bool viaRadio;
+  final AirDropApp app;
+
+  bool get acceptsFiles => app == AirDropApp.onedrop;
 
   bool get isHolding => (holdingCount ?? 0) > 0;
 
@@ -354,8 +358,11 @@ class DropService {
       ];
   List<String> get debugLog => List<String>.unmodifiable(_debugLog);
 
-  AirPeerRole get localRole =>
-      isPhoneSurface ? AirPeerRole.phone : AirPeerRole.desktop;
+  AirPeerRole get localRole {
+    if (!isPhoneSurface) return AirPeerRole.desktop;
+    if (DeviceChannel.isTabletCached) return AirPeerRole.tablet;
+    return AirPeerRole.phone;
+  }
 
   AirPeerOs get localOs {
     if (Platform.isAndroid) return AirPeerOs.android;
@@ -423,6 +430,7 @@ class DropService {
     if (Platform.environment['FLUTTER_TEST'] == 'true') return;
     try {
       lastError = null;
+      await DeviceChannel.probeTablet();
       _peerId = await DropPrefs.ensurePeerId();
       _httpPort = await _bindHttp();
       _localIpv4 = await dropLocalIpv4Addresses();
@@ -455,6 +463,7 @@ class DropService {
           port: _httpPort,
           role: airRoleWire(localRole),
           os: airOsWire(localOs),
+          files: true,
         );
         await DropP2p.setScanHard(true);
         _note(DropP2p.lastError == null
@@ -504,7 +513,7 @@ class DropService {
   String _peersKey() {
     final rows = [
       for (final peer in peerList)
-        '${peer.id}|${peer.name}|${peer.host.address}|${peer.port}|${peer.viaRadio}',
+        '${peer.id}|${peer.name}|${peer.host.address}|${peer.port}|${peer.viaRadio}|${peer.app.name}',
     ]..sort();
     return rows.join(';');
   }
@@ -616,6 +625,8 @@ class DropService {
           aimPeerId: peer.aimPeerId,
           holdingCount: peer.holdingCount,
           holdingKind: peer.holdingKind,
+          viaRadio: peer.viaRadio,
+          app: peer.app,
         );
       }
       emit(
@@ -1014,7 +1025,7 @@ class DropService {
       if (dropHostIsSelf(packet.address, _localIpv4)) return;
       if (json['type'] == 'catch') {
         if (json['toPeerId'] != _peerId) return;
-        if (_lanListed && !dropHostOnLocalLan(packet.address, _localIpv4)) {
+        if (!dropShouldAcceptLanHello(packet.address, _localIpv4)) {
           return;
         }
         final holder = _peers[id];
@@ -1023,11 +1034,12 @@ class DropService {
       }
       final port = (json['port'] as num?)?.toInt() ?? 0;
       if (port <= 0) return;
-      if (_lanListed && !dropHostOnLocalLan(packet.address, _localIpv4)) {
+      if (!dropShouldAcceptLanHello(packet.address, _localIpv4)) {
         return;
       }
       final holding = AirHolding.fromJson(json['holding']);
-      final isNew = !_peers.containsKey(id);
+      final existing = _peers[id];
+      final isNew = existing == null;
       _peers[id] = DropPeer(
         id: id,
         name: json['name'] as String? ?? 'One Drop',
@@ -1042,18 +1054,17 @@ class DropService {
         aimPeerId: dropAimPeerId(json['aim']),
         holdingCount: holding?.count,
         holdingKind: holding?.kind,
+        app: mergeAirApp(existing?.app, helloApp: json['app']),
       );
       _emitPeers();
       if (isNew) _note('wifi peer ${json['name'] ?? id}');
+      unawaited(DropPrefs.rememberLanIpv4(packet.address));
+      _sendHello(packet.address);
     } catch (_) {}
   }
 
-  Future<void> _broadcast() async {
-    _localIpv4 = await dropLocalIpv4Addresses();
-    _lanListed = true;
-    _expirePeers();
-    if (!_running || _udp == null || _localIpv4.isEmpty) return;
-    final payload = utf8.encode(
+  List<int> _helloBytes() {
+    return utf8.encode(
       jsonEncode({
         'v': 1,
         'peerId': _peerId,
@@ -1066,15 +1077,31 @@ class DropService {
         'hand': _seesHand,
         'aim': _aimPeerId,
         'holding': _holding?.toJson(),
+        'app': airAppWire(AirDropApp.onedrop),
       }),
     );
+  }
+
+  void _sendHello(InternetAddress dest) {
+    if (!_running || _udp == null) return;
+    if (!dropIsUsableLanIpv4(dest)) return;
+    _udp!.send(_helloBytes(), dest, udpPort);
+  }
+
+  Future<void> _broadcast() async {
+    _localIpv4 = await dropLocalIpv4Addresses();
+    _lanListed = true;
+    _expirePeers();
+    if (!_running || _udp == null || _localIpv4.isEmpty) return;
+    final payload = _helloBytes();
     final known = <InternetAddress>[
       for (final peer in _peers.values)
-        if (!peer.viaRadio) peer.host,
+        if (dropIsUsableLanIpv4(peer.host)) peer.host,
     ];
     for (final dest in await dropAnnounceDestinations(
       local: _localIpv4,
       knownPeers: known,
+      remembered: DropPrefs.rememberedLanIpv4,
     )) {
       _udp?.send(payload, dest, udpPort);
     }
@@ -1100,7 +1127,10 @@ class DropService {
         aimPeerId: existing.aimPeerId,
         holdingCount: existing.holdingCount,
         holdingKind: existing.holdingKind,
+        viaRadio: existing.viaRadio,
+        app: mergeAirApp(existing.app, filesCapable: row.files),
       );
+      _emitPeers();
       return;
     }
     final isNew = existing == null;
@@ -1113,6 +1143,7 @@ class DropService {
       role: parseAirRole(row.role),
       os: parseAirOs(row.os),
       viaRadio: true,
+      app: mergeAirApp(existing?.app, filesCapable: row.files),
     );
     _emitPeers();
     if (isNew) _note('ble peer ${row.name}');
@@ -1157,7 +1188,9 @@ class DropInbox {
   DropInbox._();
 
   static Future<Directory> directory({bool files = false}) async {
-    final path = files ? DropPrefs.inboxPath : DropPrefs.mediaSavePath;
+    final path = files || !Platform.isAndroid
+        ? DropPrefs.inboxPath
+        : DropPrefs.mediaSavePath;
     var dir = Directory(path);
     try {
       if (!dir.existsSync()) dir.createSync(recursive: true);
@@ -1166,7 +1199,7 @@ class DropInbox {
     final home = Platform.environment['USERPROFILE'] ??
         Platform.environment['HOME'] ??
         (await getApplicationDocumentsDirectory()).parent.path;
-    final folder = files
+    final folder = files || !Platform.isAndroid
         ? p.join(home, 'Downloads', 'OneDrop')
         : p.join(home, 'Pictures', 'OneDrop');
     dir = Directory(folder);

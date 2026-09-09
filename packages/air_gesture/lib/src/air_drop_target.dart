@@ -1,6 +1,6 @@
 import 'gaze_observation.dart';
 
-enum AirPeerRole { phone, desktop }
+enum AirPeerRole { phone, desktop, tablet }
 
 enum AirPeerOs { android, windows, macos, linux, other }
 

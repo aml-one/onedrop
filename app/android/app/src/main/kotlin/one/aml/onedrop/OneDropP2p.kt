@@ -24,6 +24,7 @@ import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.Context
 import android.content.pm.PackageManager
+import android.location.LocationManager
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
@@ -83,6 +84,9 @@ object OneDropP2p {
     private var scanHard = false
     private var scanAppliedHard = false
     private var advertisedKey = ""
+    // Honor / MagicOS often fails the extra scan-response manufacturer field.
+    // Fall back to name bytes after the 22-byte OD core in the same 0x0A11 blob.
+    private var advertiseCompact = false
     private val pendingSightings = ArrayList<Map<String, Any>>(8)
 
     private var advertiser: BluetoothLeAdvertiser? = null
@@ -103,6 +107,7 @@ object OneDropP2p {
     private var lastSkip = ""
     private var lastAdvertiseError: Int? = null
     private var lastScanError: Int? = null
+    private var multicastLock: WifiManager.MulticastLock? = null
     @Volatile
     private var radioHeldForCamera = false
 
@@ -167,9 +172,29 @@ object OneDropP2p {
                 Manifest.permission.BLUETOOTH_SCAN,
                 Manifest.permission.BLUETOOTH_ADVERTISE,
                 Manifest.permission.BLUETOOTH_CONNECT,
+                Manifest.permission.ACCESS_FINE_LOCATION,
                 Manifest.permission.NEARBY_WIFI_DEVICES,
             )
         } else if (Build.VERSION.SDK_INT >= 31) {
+            arrayOf(
+                Manifest.permission.BLUETOOTH_SCAN,
+                Manifest.permission.BLUETOOTH_ADVERTISE,
+                Manifest.permission.BLUETOOTH_CONNECT,
+                Manifest.permission.ACCESS_FINE_LOCATION,
+            )
+        } else {
+            arrayOf(
+                Manifest.permission.ACCESS_FINE_LOCATION,
+                Manifest.permission.BLUETOOTH,
+                Manifest.permission.BLUETOOTH_ADMIN,
+            )
+        }
+    }
+
+    /// BLE scan/advertise. Nearby Wi‑Fi is for the hotspot path only —
+    /// Fire OS often never grants it, which used to leave the radar empty.
+    fun blePermissions(): Array<String> {
+        return if (Build.VERSION.SDK_INT >= 31) {
             arrayOf(
                 Manifest.permission.BLUETOOTH_SCAN,
                 Manifest.permission.BLUETOOTH_ADVERTISE,
@@ -191,6 +216,12 @@ object OneDropP2p {
         }
     }
 
+    fun hasBlePermissions(context: Context): Boolean {
+        return blePermissions().all {
+            context.checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED
+        }
+    }
+
     fun requestPermissions(activity: MainActivity) {
         if (activity.firstRunBusy()) return
         val missing = neededPermissions().filter {
@@ -207,7 +238,7 @@ object OneDropP2p {
     fun onPermissionResult() {
         if (!running) return
         val ctx = app ?: return
-        if (hasPermissions(ctx)) {
+        if (hasBlePermissions(ctx)) {
             startRadio()
         }
     }
@@ -215,7 +246,7 @@ object OneDropP2p {
     fun onActivityResumed(activity: MainActivity) {
         if (!running) return
         if (radioHeldForCamera) return
-        if (!hasPermissions(activity)) {
+        if (!hasBlePermissions(activity)) {
             requestPermissions(activity)
             return
         }
@@ -240,7 +271,7 @@ object OneDropP2p {
         scanHard = hard
         if (!running || radioHeldForCamera) return
         val ctx = app ?: return
-        if (!hasPermissions(ctx)) return
+        if (!hasBlePermissions(ctx)) return
         val adapter = bluetoothAdapter() ?: return
         startScan(adapter)
     }
@@ -318,9 +349,9 @@ object OneDropP2p {
         }
         persistIdentity(ctx)
         running = true
-        if (!hasPermissions(ctx)) {
+        if (!hasBlePermissions(ctx)) {
             lastSkip = "missing_permissions"
-            Log.i(TAG, "start: nearby perms missing; wait until AirGrab is idle")
+            Log.i(TAG, "start: BLE perms missing")
             result.success(false)
             return
         }
@@ -334,10 +365,11 @@ object OneDropP2p {
             lastSkip = "no_context"
             return
         }
-        if (!hasPermissions(ctx)) {
+        if (!hasBlePermissions(ctx)) {
             lastSkip = "missing_permissions"
             return
         }
+        holdMulticast()
         val manager = ctx.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager ?: run {
             lastSkip = "no_bt_manager"
             return
@@ -357,6 +389,10 @@ object OneDropP2p {
             return
         }
         lastSkip = ""
+        if (!locationEnabled(ctx)) {
+            lastSkip = "location_off"
+            Log.w(TAG, "Location is off — BLE scan is empty on most phones")
+        }
         startAdvertise(adapter)
         startScan(adapter)
     }
@@ -377,6 +413,9 @@ object OneDropP2p {
             "hasAdvertiser" to (adapter?.bluetoothLeAdvertiser != null),
             "leFeature" to (ctx?.packageManager?.hasSystemFeature(PackageManager.FEATURE_BLUETOOTH_LE) == true),
             "hasPermissions" to (ctx != null && hasPermissions(ctx)),
+            "hasBlePermissions" to (ctx != null && hasBlePermissions(ctx)),
+            "locationOn" to (ctx != null && locationEnabled(ctx)),
+            "multicastHeld" to (multicastLock?.isHeld == true),
             "skip" to lastSkip,
             "advertiseError" to lastAdvertiseError,
             "scanError" to lastScanError,
@@ -390,6 +429,42 @@ object OneDropP2p {
         val ctx = app ?: return null
         val manager = ctx.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager ?: return null
         return manager.adapter
+    }
+
+    private fun locationEnabled(context: Context): Boolean {
+        val lm = context.getSystemService(Context.LOCATION_SERVICE) as? LocationManager ?: return true
+        return if (Build.VERSION.SDK_INT >= 28) {
+            lm.isLocationEnabled
+        } else {
+            @Suppress("DEPRECATION")
+            android.provider.Settings.Secure.getInt(
+                context.contentResolver,
+                android.provider.Settings.Secure.LOCATION_MODE,
+                android.provider.Settings.Secure.LOCATION_MODE_OFF,
+            ) != android.provider.Settings.Secure.LOCATION_MODE_OFF
+        }
+    }
+
+    private fun holdMulticast() {
+        val ctx = app ?: return
+        if (multicastLock?.isHeld == true) return
+        try {
+            val wifi = ctx.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+                ?: return
+            multicastLock = wifi.createMulticastLock("onedrop:p2p").apply {
+                setReferenceCounted(false)
+                acquire()
+            }
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun releaseMulticast() {
+        try {
+            if (multicastLock?.isHeld == true) multicastLock?.release()
+        } catch (_: Exception) {
+        }
+        multicastLock = null
     }
 
     @SuppressLint("MissingPermission")
@@ -406,6 +481,7 @@ object OneDropP2p {
         }
         advertiseStarted = false
         advertisedKey = ""
+        advertiseCompact = false
     }
 
     @SuppressLint("MissingPermission")
@@ -449,7 +525,7 @@ object OneDropP2p {
             AdvertiseSettings.ADVERTISE_MODE_LOW_POWER
         }
         val key =
-            "$peerId|$httpPort|$advertiseMode|${beacon.contentHashCode()}|${nameBytes.contentHashCode()}"
+            "$peerId|$httpPort|$advertiseMode|$advertiseCompact|${beacon.contentHashCode()}|${nameBytes.contentHashCode()}"
         if (advertiseStarted && advertisedKey == key) return
         if (advertiseStarted) {
             try {
@@ -474,19 +550,38 @@ object OneDropP2p {
             .setConnectable(true)
             .setTimeout(0)
             .build()
+        val payload = if (advertiseCompact && nameBytes.isNotEmpty()) {
+            beacon + nameBytes
+        } else {
+            beacon
+        }
         val data = AdvertiseData.Builder()
             .setIncludeDeviceName(false)
-            .addManufacturerData(COMPANY, beacon)
+            .addManufacturerData(COMPANY, payload)
             .build()
-        val scan = AdvertiseData.Builder()
-            .setIncludeDeviceName(false)
-            .addManufacturerData(COMPANY_NAME, nameBytes)
-            .build()
+        val scan = if (!advertiseCompact && nameBytes.isNotEmpty()) {
+            AdvertiseData.Builder()
+                .setIncludeDeviceName(false)
+                .addManufacturerData(COMPANY_NAME, nameBytes)
+                .build()
+        } else {
+            null
+        }
         try {
-            advertiser?.startAdvertising(settings, data, scan, advertiseCallback)
+            if (scan != null) {
+                advertiser?.startAdvertising(settings, data, scan, advertiseCallback)
+            } else {
+                advertiser?.startAdvertising(settings, data, advertiseCallback)
+            }
             advertiseStarted = true
             advertisedKey = key
         } catch (error: Exception) {
+            if (!advertiseCompact) {
+                advertiseCompact = true
+                advertisedKey = ""
+                startAdvertise(adapter)
+                return
+            }
             lastSkip = "advertise_exception"
             Log.w(TAG, "advertise", error)
         }
@@ -503,17 +598,30 @@ object OneDropP2p {
             scanStarted = false
         }
         scanner = adapter.bluetoothLeScanner ?: return
-        val filters = listOf(
-            ScanFilter.Builder().setManufacturerData(COMPANY, byteArrayOf(0x4F, 0x44)).build(),
-        )
+        // HyperOS manufacturer ScanFilters often drop Honor tablets and
+        // Windows extended ads. Filter in software while the radar is open.
+        val filters: List<ScanFilter>? = if (scanHard) {
+            null
+        } else {
+            listOf(
+                ScanFilter.Builder().setManufacturerData(COMPANY, byteArrayOf(0x4F, 0x44)).build(),
+            )
+        }
         val mode = if (scanHard) {
-            ScanSettings.SCAN_MODE_BALANCED
+            ScanSettings.SCAN_MODE_LOW_LATENCY
         } else {
             ScanSettings.SCAN_MODE_LOW_POWER
         }
-        val settings = ScanSettings.Builder()
+        val builder = ScanSettings.Builder()
             .setScanMode(mode)
-            .build()
+            .setCallbackType(ScanSettings.CALLBACK_TYPE_ALL_MATCHES)
+            .setMatchMode(ScanSettings.MATCH_MODE_AGGRESSIVE)
+            .setNumOfMatches(ScanSettings.MATCH_NUM_MAX_ADVERTISEMENT)
+            .setReportDelay(0)
+        // Default setLegacy(true) receives classic 4.2 ads from Android
+        // startAdvertising(). setLegacy(false) is extended-only on HyperOS
+        // / ColorOS, so three phones next to each other see nobody.
+        val settings = builder.build()
         try {
             scanner?.startScan(filters, settings, scanCallback)
             scanStarted = true
@@ -546,6 +654,7 @@ object OneDropP2p {
         teardownClient()
         stopHotspot()
         pauseDiscovery()
+        releaseMulticast()
         try {
             gattServer?.close()
         } catch (_: Exception) {
@@ -813,13 +922,21 @@ object OneDropP2p {
         }
     }
 
-    private fun emitPeer(id: String, name: String, port: Int, role: String, os: String) {
+    private fun emitPeer(
+        id: String,
+        name: String,
+        port: Int,
+        role: String,
+        os: String,
+        files: Boolean,
+    ) {
         val row = mapOf(
             "peerId" to id,
             "name" to name,
             "port" to port,
             "role" to role,
             "os" to os,
+            "files" to files,
         )
         main.post {
             val events = sink
@@ -846,7 +963,11 @@ object OneDropP2p {
         val id = String(data, 6, end - 6, Charsets.UTF_8).trim()
         if (id.isEmpty() || id == peerId) return null
         val flags = data[3].toInt() and 0xFF
-        val role = if ((flags and 0x03) == 1) "desktop" else "phone"
+        val role = when (flags and 0x03) {
+            1 -> "desktop"
+            2 -> "tablet"
+            else -> "phone"
+        }
         val os = when ((flags shr 2) and 0x07) {
             1 -> "android"
             2 -> "windows"
@@ -854,12 +975,19 @@ object OneDropP2p {
             4 -> "macos"
             else -> "other"
         }
-        val name = if (nameRaw != null && nameRaw.isNotEmpty()) {
-            String(nameRaw, Charsets.UTF_8).trim().ifBlank { "One Drop" }
+        val embedded = if (data.size > 22) {
+            String(data, 22, data.size - 22, Charsets.UTF_8).trim()
         } else {
-            "One Drop"
+            ""
         }
-        return Sighting(id, name, port, role, os)
+        val fromScan = if (nameRaw != null && nameRaw.isNotEmpty()) {
+            String(nameRaw, Charsets.UTF_8).trim()
+        } else {
+            ""
+        }
+        val name = embedded.ifBlank { fromScan }.ifBlank { "One Drop" }
+        val files = (flags and 0x20) != 0
+        return Sighting(id, name, port, role, os, files)
     }
 
     private data class Sighting(
@@ -868,6 +996,7 @@ object OneDropP2p {
         val port: Int,
         val role: String,
         val os: String,
+        val files: Boolean,
     )
 
     private val advertiseCallback = object : AdvertiseCallback() {
@@ -875,20 +1004,43 @@ object OneDropP2p {
             advertiseStarted = false
             advertisedKey = ""
             lastAdvertiseError = errorCode
+            if (!advertiseCompact &&
+                (errorCode == ADVERTISE_FAILED_DATA_TOO_LARGE ||
+                    errorCode == ADVERTISE_FAILED_INTERNAL_ERROR)
+            ) {
+                advertiseCompact = true
+                bluetoothAdapter()?.let { startAdvertise(it) }
+                return
+            }
             lastSkip = "advertise_failed_$errorCode"
             Log.w(TAG, "advertise failed $errorCode")
         }
     }
 
+    private fun ingestScan(result: ScanResult) {
+        val record = result.scanRecord ?: return
+        val beacon = record.getManufacturerSpecificData(COMPANY)
+        val name = record.getManufacturerSpecificData(COMPANY_NAME)
+            ?: record.deviceName?.toByteArray(Charsets.UTF_8)
+        val sighting = parseBeacon(beacon, name) ?: return
+        devices[sighting.id] = result.device
+        emitPeer(
+            sighting.id,
+            sighting.name,
+            sighting.port,
+            sighting.role,
+            sighting.os,
+            sighting.files,
+        )
+    }
+
     private val scanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
-            val record = result.scanRecord ?: return
-            val beacon = record.getManufacturerSpecificData(COMPANY)
-            val name = record.getManufacturerSpecificData(COMPANY_NAME)
-                ?: record.deviceName?.toByteArray(Charsets.UTF_8)
-            val sighting = parseBeacon(beacon, name) ?: return
-            devices[sighting.id] = result.device
-            emitPeer(sighting.id, sighting.name, sighting.port, sighting.role, sighting.os)
+            ingestScan(result)
+        }
+
+        override fun onBatchScanResults(results: MutableList<ScanResult>) {
+            for (row in results) ingestScan(row)
         }
 
         override fun onScanFailed(errorCode: Int) {

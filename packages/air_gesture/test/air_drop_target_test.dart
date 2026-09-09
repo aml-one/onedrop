@@ -230,4 +230,31 @@ void main() {
     expect(d.action, LeftFrameAction.waitCatch);
     expect(d.target?.id, 'pad');
   });
+
+  test('hello wire keeps tablet distinct from phone and desktop', () {
+    expect(parseAirRole('tablet'), AirPeerRole.tablet);
+    expect(airRoleWire(AirPeerRole.tablet), 'tablet');
+    expect(parseAirRole('phone'), AirPeerRole.phone);
+    expect(parseAirRole('mystery'), AirPeerRole.phone);
+  });
+
+  test('hello app is OneDrop or Gallery, defaulting to photos-only', () {
+    expect(parseAirApp('onedrop'), AirDropApp.onedrop);
+    expect(parseAirApp('gallery'), AirDropApp.gallery);
+    expect(parseAirApp(null), AirDropApp.gallery);
+    expect(parseAirApp(null, filesCapable: true), AirDropApp.onedrop);
+    expect(airAppWire(AirDropApp.onedrop), 'onedrop');
+    expect(
+      mergeAirApp(AirDropApp.onedrop, helloApp: null),
+      AirDropApp.onedrop,
+    );
+    expect(
+      mergeAirApp(AirDropApp.gallery, filesCapable: true),
+      AirDropApp.onedrop,
+    );
+    expect(
+      mergeAirApp(AirDropApp.onedrop, helloApp: 'gallery'),
+      AirDropApp.gallery,
+    );
+  });
 }

@@ -140,6 +140,30 @@ class DeviceChannel {
     }
   }
 
+  static bool? _tablet;
+
+  /// Last [probeTablet] result. False until probed, and on non-Android.
+  static bool get isTabletCached => _tablet == true;
+
+  static void resetForTest() {
+    _tablet = null;
+  }
+
+  /// Android tablets use the smallest-width ≥ 600 dp qualifier.
+  static Future<bool> probeTablet() async {
+    if (_tablet != null) return _tablet!;
+    if (!Platform.isAndroid) {
+      _tablet = false;
+      return false;
+    }
+    try {
+      _tablet = await _channel.invokeMethod<bool>('isTablet') ?? false;
+    } catch (_) {
+      _tablet = false;
+    }
+    return _tablet!;
+  }
+
   /// MediaStore IS_FAVORITE ids plus Gallery Loved / unloved overrides.
   static Future<PhotoPickerFavoriteSets> listFavoriteSources() async {
     if (!Platform.isAndroid) return const PhotoPickerFavoriteSets();

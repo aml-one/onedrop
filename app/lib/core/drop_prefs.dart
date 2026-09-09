@@ -41,6 +41,7 @@ class DropPrefs {
   static const _imagesToGalleryKey = 'images_to_gallery';
   static const _airGrabKey = 'drop_air_grab';
   static const _openExplorerOnReceiveKey = 'open_explorer_on_receive';
+  static const _lanIpsKey = 'drop_lan_ips';
 
   static SharedPreferences? _prefs;
 
@@ -61,6 +62,7 @@ class DropPrefs {
 
   static void resetForTest() {
     _prefs = null;
+    DeviceChannel.resetForTest();
   }
 
   static String get hostHint => localComputerName();
@@ -72,6 +74,7 @@ class DropPrefs {
     if (saved.isNotEmpty && !isJunkDisplayName(saved)) return saved;
     var system = '';
     if (Platform.isAndroid) {
+      await DeviceChannel.probeTablet();
       system = cleanDisplayName(await DeviceChannel.getDeviceName());
     }
     if (isJunkDisplayName(system)) system = hostHint;
@@ -192,8 +195,12 @@ class DropPrefs {
     return androidCameraRollPath;
   }
 
-  static String get mediaSavePath =>
-      imagesToCameraRoll ? cameraRollPath : mediaInboxPath;
+  /// Photos and videos. On a phone this is the camera roll or Pictures/OneDrop.
+  /// On a PC there is no camera roll — they go in the receive folder.
+  static String get mediaSavePath {
+    if (!Platform.isAndroid) return inboxPath;
+    return imagesToCameraRoll ? cameraRollPath : mediaInboxPath;
+  }
 
   static String get inboxPath {
     final raw = _prefs?.getString(_inboxKey)?.trim();
@@ -241,6 +248,41 @@ class DropPrefs {
   static Future<void> setLaunchAtStartup(bool value) async {
     await ensure();
     await _prefs!.setBool(_launchKey, value);
+  }
+
+  /// Last LAN IPv4s we heard a hello from. Ethernet PCs unicast here because
+  /// Xiaomi / ColorOS APs often drop wired→Wi‑Fi broadcasts, and ARP forgets
+  /// a quiet phone within minutes.
+  static List<InternetAddress> get rememberedLanIpv4 {
+    final raw = _prefs?.getStringList(_lanIpsKey);
+    if (raw == null || raw.isEmpty) return const [];
+    final out = <InternetAddress>[];
+    for (final row in raw) {
+      final ip = row.trim();
+      if (ip.isEmpty) continue;
+      try {
+        final addr = InternetAddress(ip);
+        if (addr.type == InternetAddressType.IPv4 && !addr.isLoopback) {
+          out.add(addr);
+        }
+      } catch (_) {}
+    }
+    return out;
+  }
+
+  static Future<void> rememberLanIpv4(InternetAddress addr) async {
+    if (addr.type != InternetAddressType.IPv4 || addr.isLoopback) return;
+    if (addr.address == '0.0.0.0') return;
+    await ensure();
+    final current = _prefs!.getStringList(_lanIpsKey) ?? const <String>[];
+    if (current.isNotEmpty && current.first == addr.address) return;
+    final next = <String>[
+      addr.address,
+      for (final ip in current)
+        if (ip != addr.address) ip,
+    ];
+    if (next.length > 16) next.removeRange(16, next.length);
+    await _prefs!.setStringList(_lanIpsKey, next);
   }
 
   static List<DropKnownPeer> get knownPeers {

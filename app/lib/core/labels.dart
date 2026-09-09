@@ -55,8 +55,9 @@ String dropInitial(String name) {
   return trimmed.substring(0, 1).toUpperCase();
 }
 
-/// Short type for the nearby avatar: Phone, PC, Mac, Linux.
+/// Short type for the nearby avatar: Phone, Tablet, PC, Mac, Linux.
 String dropDeviceTypeLabel(DropPeer peer) {
+  if (peer.role == AirPeerRole.tablet) return 'Tablet';
   switch (peer.os) {
     case AirPeerOs.android:
       return 'Phone';
@@ -69,6 +70,26 @@ String dropDeviceTypeLabel(DropPeer peer) {
     case AirPeerOs.other:
       return peer.role == AirPeerRole.phone ? 'Phone' : 'PC';
   }
+}
+
+String dropAppLabel(DropPeer peer) {
+  return peer.app == AirDropApp.onedrop ? 'OneDrop' : 'Gallery';
+}
+
+String dropAppHint(DropPeer peer) {
+  return peer.app == AirDropApp.onedrop ? 'files' : 'photos';
+}
+
+/// Orbit stays short (`OneDrop`). List rows add the capability hint.
+String dropPeerAppLine(
+  DropPeer peer, {
+  bool known = false,
+  bool compact = false,
+}) {
+  final app = compact
+      ? dropAppLabel(peer)
+      : '${dropAppLabel(peer)} · ${dropAppHint(peer)}';
+  return known ? 'Known · $app' : app;
 }
 
 bool isVideoPath(String path) {
