@@ -219,7 +219,9 @@ class _PhotoPickerScreenState extends State<PhotoPickerScreen> {
   Widget build(BuildContext context) {
     final ink = AmlTheme.inkOf(context);
     return Scaffold(
-      backgroundColor: kSettingsPageBackground,
+      backgroundColor: AmlTheme.isDark(context)
+          ? AmlTheme.darkBg
+          : kSettingsPageBackground,
       appBar: AppBar(
         title: Text(_chip.label),
         actions: [

@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:onedrop/core/device_name.dart';
 import 'package:onedrop/core/drop_prefs.dart';
+import 'package:onedrop/core/host.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
@@ -70,12 +71,12 @@ void main() {
     );
   });
 
-  test('opening File Explorer on receive is off until turned on', () async {
+  test('opening File Explorer on receive defaults on for the desk', () async {
+    expect(DropPrefs.openExplorerOnReceive, isDesktopTray);
+    await DropPrefs.setOpenExplorerOnReceive(false);
     expect(DropPrefs.openExplorerOnReceive, isFalse);
     await DropPrefs.setOpenExplorerOnReceive(true);
     expect(DropPrefs.openExplorerOnReceive, isTrue);
-    await DropPrefs.setOpenExplorerOnReceive(false);
-    expect(DropPrefs.openExplorerOnReceive, isFalse);
   });
 
   test('Air grab auto-accepts even in Ask; on by default on Windows/macOS', () async {

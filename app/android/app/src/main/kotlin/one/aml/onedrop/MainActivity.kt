@@ -16,12 +16,14 @@ import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
+import java.util.HashMap
 import java.util.LinkedHashSet
 
 class MainActivity : FlutterActivity() {
     private var firstRunInFlight = false
     private var firstRunAt = 0L
     private var pendingFirstRun: MethodChannel.Result? = null
+    private var pendingSettings: MethodChannel.Result? = null
     private val pendingShares = ArrayList<String>()
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -150,6 +152,57 @@ class MainActivity : FlutterActivity() {
             markRuntimeAsked()
             OneDropP2p.onPermissionResult()
         }
+        if (requestCode == OneDropPermissions.REQUEST) {
+            markRuntimeAsked()
+            val cam = permissions.indexOf(Manifest.permission.CAMERA)
+            if (cam >= 0) {
+                AirGrabTracker.onPermission(
+                    cam < grantResults.size &&
+                        grantResults[cam] == PackageManager.PERMISSION_GRANTED,
+                )
+            }
+            OneDropP2p.onPermissionResult()
+            val pending = pendingSettings
+            pendingSettings = null
+            pending?.success(true)
+        }
+    }
+
+    fun listPermissions(): ArrayList<HashMap<String, Any?>> = OneDropPermissions.rows(this)
+
+    fun debugExtras(): HashMap<String, Any?> = OneDropPermissions.extras(this)
+
+    fun openAppSettings(): Boolean {
+        return try {
+            startActivity(
+                OneDropPermissions.appSettings(this).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            )
+            true
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    fun requestPermissionGroup(id: String, result: MethodChannel.Result) {
+        when (id) {
+            "location", "bluetooth", "overlay", "battery" -> {
+                result.success(OneDropPermissions.openSystem(this, id))
+                return
+            }
+        }
+        val names = OneDropP2p.runtimeDangerous(this, OneDropPermissions.namesFor(id))
+        if (names.isEmpty()) {
+            if (id == "nearby") OneDropP2p.onPermissionResult()
+            result.success(true)
+            return
+        }
+        if (firstRunInFlight) {
+            result.success(false)
+            return
+        }
+        pendingSettings?.success(false)
+        pendingSettings = result
+        ActivityCompat.requestPermissions(this, names, OneDropPermissions.REQUEST)
     }
 
     fun requestListenNotifications() {

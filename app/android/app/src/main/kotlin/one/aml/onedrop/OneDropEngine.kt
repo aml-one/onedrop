@@ -449,6 +449,20 @@ object DeviceBridge {
                     }
                     host.ensureFirstRunPermissions(result)
                 }
+                "listPermissions" -> {
+                    result.success(host?.listPermissions() ?: emptyList<Any>())
+                }
+                "requestPermission" -> {
+                    val id = call.argument<String>("id").orEmpty()
+                    if (host == null || id.isEmpty()) {
+                        result.success(false)
+                        return@setMethodCallHandler
+                    }
+                    host.requestPermissionGroup(id, result)
+                }
+                "openAppSettings" -> result.success(host?.openAppSettings() == true)
+                "debugExtras" ->
+                    result.success(host?.debugExtras() ?: hashMapOf<String, Any?>())
                 "listFavoriteSources" -> {
                     val ctx = this.app ?: host
                     if (ctx == null) {

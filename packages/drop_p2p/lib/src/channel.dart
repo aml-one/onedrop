@@ -100,7 +100,13 @@ class DropP2p {
       });
       _started = ok != false;
       if (ok == false) {
-        lastError = 'nearby permissions missing or radio did not start';
+        final status = await debugStatus();
+        final skip = '${status['skip'] ?? ''}'.trim();
+        lastError = skip.isEmpty
+            ? 'nearby permissions missing or radio did not start'
+            : skip;
+      } else {
+        lastError = null;
       }
     } catch (error) {
       lastError = '$error';

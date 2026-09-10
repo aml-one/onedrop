@@ -84,6 +84,7 @@ void main() {
   });
 
   test('revealReceivedBatch stays quiet when the setting is off', () async {
+    await DropPrefs.setOpenExplorerOnReceive(false);
     expect(DropPrefs.openExplorerOnReceive, isFalse);
     await revealReceivedBatch(
       DropReceivedBatch(

@@ -4,7 +4,9 @@ import 'package:aml_ui/aml_ui.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../core/drop_prefs.dart';
 import '../services/drop_debug.dart';
+import '../services/drop_debug_upload.dart';
 
 class NearbyDebugScreen extends StatefulWidget {
   const NearbyDebugScreen({super.key});
@@ -17,10 +19,12 @@ class _NearbyDebugScreenState extends State<NearbyDebugScreen> {
   String _text = 'Collecting…';
   String? _status;
   bool _busy = false;
+  bool _optIn = false;
 
   @override
   void initState() {
     super.initState();
+    _optIn = DropPrefs.debugUploadOptIn;
     unawaited(_reload());
   }
 
@@ -57,7 +61,9 @@ class _NearbyDebugScreenState extends State<NearbyDebugScreen> {
   Widget build(BuildContext context) {
     final ink = AmlTheme.inkOf(context);
     return Scaffold(
-      backgroundColor: kSettingsPageBackground,
+      backgroundColor: AmlTheme.isDark(context)
+          ? AmlTheme.darkBg
+          : kSettingsPageBackground,
       body: SafeArea(
         child: Column(
           children: [
@@ -98,6 +104,31 @@ class _NearbyDebugScreenState extends State<NearbyDebugScreen> {
                     color: AmlTheme.mutedOf(context),
                   ),
                 ),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
+              child: SettingsCard(
+                children: [
+                  SettingsSwitchTile(
+                    secondary: settingsPastelIcon(
+                      Icons.cloud_upload_rounded,
+                      'debug',
+                    ),
+                    title: const Text('Send Nearby logs to AmL'),
+                    subtitle: _optIn
+                        ? (DropDebugUpload.instance.lastStatus ??
+                            'Uploads every few minutes until you turn this off.')
+                        : 'Uploads Bluetooth and Wi‑Fi status every few minutes. No photos or files.',
+                    value: _optIn,
+                    onChanged: (value) async {
+                      await DropDebugUpload.instance.setOptIn(value);
+                      if (!mounted) return;
+                      setState(() => _optIn = value);
+                      unawaited(_reload());
+                    },
+                  ),
+                ],
               ),
             ),
             Expanded(

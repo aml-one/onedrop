@@ -17,6 +17,7 @@ import 'core/panel_window.dart';
 import 'screens/file_explorer_screen.dart';
 import 'screens/photo_picker_screen.dart';
 import 'services/air_grab_session.dart';
+import 'services/drop_debug_upload.dart';
 import 'services/drop_service.dart';
 import 'widgets/air_grab_overlay.dart';
 import 'widgets/drop_app_caption.dart';
@@ -38,18 +39,20 @@ class OneDropPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final dark = AmlTheme.isDark(context);
+    final shell = dark ? AmlTheme.darkBg : kSettingsPageBackground;
+    final overlay = dark
+        ? AmlTheme.darkStatusBarOverlay
+        : AmlTheme.lightStatusBarOverlay;
     // PopScope must sit *outside* the controller rebuild. Closing Settings
     // notifyListeners() used to recreate it mid-back-swipe, and HyperOS
     // finished the activity instead of returning to Home.
     return _trapPhoneBack(
       controller,
       AnnotatedRegion<SystemUiOverlayStyle>(
-        value: const SystemUiOverlayStyle(
-          statusBarColor: kSettingsPageBackground,
-          statusBarIconBrightness: Brightness.dark,
-          statusBarBrightness: Brightness.light,
-          systemNavigationBarColor: kSettingsPageBackground,
-          systemNavigationBarIconBrightness: Brightness.dark,
+        value: overlay.copyWith(
+          statusBarColor: shell,
+          systemNavigationBarColor: shell,
         ),
         child: ListenableBuilder(
         listenable: controller,
@@ -65,7 +68,7 @@ class OneDropPanel extends StatelessWidget {
             child: Material(
             color: controller.previewPaths != null
                 ? const Color(0xFF0C0A14)
-                : kSettingsPageBackground,
+                : shell,
             child: Stack(
               fit: StackFit.expand,
               children: [
@@ -78,7 +81,7 @@ class OneDropPanel extends StatelessWidget {
                 else ...[
                   const RepaintBoundary(child: SettingsAmbientBackground()),
                   ColoredBox(
-                    color: kSettingsPageBackground.withValues(alpha: 0.88),
+                    color: shell.withValues(alpha: dark ? 0.62 : 0.88),
                     child: isPhoneSurface
                           ? SafeArea(
                               child: Column(
@@ -1456,6 +1459,7 @@ class _SettingsViewState extends State<_SettingsView> {
   bool _launch = false;
   bool _airGrab = false;
   bool _openExplorer = false;
+  bool _debugUpload = false;
 
   @override
   void initState() {
@@ -1464,6 +1468,7 @@ class _SettingsViewState extends State<_SettingsView> {
     _name = TextEditingController(text: DropPrefs.dropDisplayName);
     _airGrab = DropPrefs.airGrabEnabled;
     _openExplorer = DropPrefs.openExplorerOnReceive;
+    _debugUpload = DropPrefs.debugUploadOptIn;
     unawaited(_loadLaunch());
   }
 
@@ -1757,6 +1762,56 @@ class _SettingsViewState extends State<_SettingsView> {
               const SizedBox(height: 2),
               Text(
                 'Opens once per drop, even if several files arrive.',
+                style: TextStyle(
+                  color: muted,
+                  fontSize: 11,
+                  height: 1.3,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              Divider(
+                height: 10,
+                color: AmlTheme.strokeOf(context).withValues(alpha: 0.6),
+              ),
+              SizedBox(
+                height: 32,
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.cloud_upload_rounded,
+                      size: 16,
+                      color: AmlTheme.pink,
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'Send Nearby logs to AmL',
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontWeight: FontWeight.w700,
+                          fontSize: 12.5,
+                          color: ink,
+                        ),
+                      ),
+                    ),
+                    Transform.scale(
+                      scale: 0.78,
+                      child: Switch(
+                        value: _debugUpload,
+                        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        onChanged: (value) async {
+                          await DropDebugUpload.instance.setOptIn(value);
+                          setState(() => _debugUpload = value);
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                'Uploads Bluetooth and Wi‑Fi status every few minutes. No files.',
                 style: TextStyle(
                   color: muted,
                   fontSize: 11,

@@ -16,6 +16,7 @@ import 'core/panel_window.dart';
 import 'core/tray_host.dart';
 import 'panel.dart';
 import 'services/air_grab_session.dart';
+import 'services/drop_debug_upload.dart';
 import 'services/drop_service.dart';
 import 'widgets/air_grab_target_glow.dart';
 
@@ -40,6 +41,7 @@ Future<void> main() async {
       }
       await AirGrabSession.instance.attach();
     }
+    DropDebugUpload.instance.attach();
   }
   final controller = DropController();
   TrayHost.instance.onOpenSettings = controller.openSettings;
@@ -122,7 +124,7 @@ class _OneDropAppState extends State<OneDropApp> with WidgetsBindingObserver {
         return MaterialApp(
           title: 'OneDrop',
           debugShowCheckedModeBanner: false,
-          color: beacon ? punch : kSettingsPageBackground,
+          color: beacon ? punch : AmlTheme.bg,
           theme: beacon
               ? light.copyWith(
                   scaffoldBackgroundColor: punch,
@@ -159,12 +161,16 @@ class _OneDropAppState extends State<OneDropApp> with WidgetsBindingObserver {
                     locked: AirGrabSession.instance.catchLocked,
                   ),
                 )
-              : Scaffold(
-                  backgroundColor: kSettingsPageBackground,
-                  body: OneDropPanel(
-                    controller: widget.controller,
-                    onQuit: isDesktopTray ? quitOneDrop : null,
-                    versionLabel: kAppVersion,
+              : Builder(
+                  builder: (context) => Scaffold(
+                    backgroundColor: AmlTheme.isDark(context)
+                        ? AmlTheme.darkBg
+                        : kSettingsPageBackground,
+                    body: OneDropPanel(
+                      controller: widget.controller,
+                      onQuit: isDesktopTray ? quitOneDrop : null,
+                      versionLabel: kAppVersion,
+                    ),
                   ),
                 ),
         );

@@ -308,7 +308,7 @@ class _RoundHit extends StatelessWidget {
     return Tooltip(
       message: tooltip,
       child: Material(
-        color: Colors.white.withValues(alpha: 0.88),
+        color: AmlTheme.panelOf(context),
         shape: const CircleBorder(),
         elevation: 1,
         shadowColor: AmlTheme.violet.withValues(alpha: 0.18),
@@ -441,6 +441,7 @@ class _DropConstellationState extends State<_DropConstellation>
                         origin: origin,
                         well: well,
                         cheap: _cheap,
+                        dark: AmlTheme.isDark(context),
                       ),
                     );
                   },
@@ -537,12 +538,14 @@ class _FieldPainter extends CustomPainter {
     required this.origin,
     required this.well,
     required this.cheap,
+    required this.dark,
   });
 
   final double t;
   final Offset origin;
   final double well;
   final bool cheap;
+  final bool dark;
 
   static const _wave = Color.fromRGBO(210, 230, 255, 1);
 
@@ -558,7 +561,7 @@ class _FieldPainter extends CustomPainter {
         Paint()
           ..shader = RadialGradient(
             colors: [
-              AmlTheme.sky.withValues(alpha: 0.16),
+              AmlTheme.sky.withValues(alpha: dark ? 0.28 : 0.16),
               AmlTheme.sky.withValues(alpha: 0),
             ],
           ).createShader(
@@ -569,7 +572,7 @@ class _FieldPainter extends CustomPainter {
       canvas.drawCircle(
         origin,
         well * 0.72,
-        Paint()..color = AmlTheme.sky.withValues(alpha: 0.10),
+        Paint()..color = AmlTheme.sky.withValues(alpha: dark ? 0.20 : 0.10),
       );
     }
     final rings = cheap ? 2 : 5;
@@ -584,7 +587,9 @@ class _FieldPainter extends CustomPainter {
         Paint()
           ..style = PaintingStyle.stroke
           ..strokeWidth = cheap ? 1.4 : (2.4 - i * 0.25).clamp(1.0, 2.4)
-          ..color = _wave.withValues(alpha: fade * (cheap ? 0.40 : 0.55)),
+          ..color = _wave.withValues(
+            alpha: fade * (cheap ? (dark ? 0.55 : 0.40) : (dark ? 0.72 : 0.55)),
+          ),
       );
     }
     if (cheap) return;
@@ -621,7 +626,8 @@ class _FieldPainter extends CustomPainter {
       oldDelegate.t != t ||
       oldDelegate.origin != origin ||
       oldDelegate.well != well ||
-      oldDelegate.cheap != cheap;
+      oldDelegate.cheap != cheap ||
+      oldDelegate.dark != dark;
 }
 
 class _DropWell extends StatelessWidget {

@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'device_channel.dart';
 import 'device_name.dart';
+import 'host.dart';
 
 enum DropAcceptMode { ask, known, everyone }
 
@@ -42,6 +43,9 @@ class DropPrefs {
   static const _airGrabKey = 'drop_air_grab';
   static const _openExplorerOnReceiveKey = 'open_explorer_on_receive';
   static const _lanIpsKey = 'drop_lan_ips';
+  static const _debugUploadKey = 'debug_upload_opt_in';
+  static const _debugSessionKey = 'debug_upload_session';
+  static const _debugSeqKey = 'debug_upload_seq';
 
   static SharedPreferences? _prefs;
 
@@ -235,8 +239,9 @@ class DropPrefs {
   }
 
   /// Desktop only: open the system file manager after a received drop.
+  /// Defaults on for the tray clients so a finished drop shows the inbox.
   static bool get openExplorerOnReceive =>
-      _prefs?.getBool(_openExplorerOnReceiveKey) ?? false;
+      _prefs?.getBool(_openExplorerOnReceiveKey) ?? isDesktopTray;
 
   static Future<void> setOpenExplorerOnReceive(bool value) async {
     await ensure();
@@ -248,6 +253,36 @@ class DropPrefs {
   static Future<void> setLaunchAtStartup(bool value) async {
     await ensure();
     await _prefs!.setBool(_launchKey, value);
+  }
+
+  /// Opt-in Nearby debug uploads to aml.one. Off until the user turns it on.
+  static bool get debugUploadOptIn => _prefs?.getBool(_debugUploadKey) ?? false;
+
+  static String get debugUploadSession =>
+      _prefs?.getString(_debugSessionKey)?.trim() ?? '';
+
+  static int get debugUploadSeq => _prefs?.getInt(_debugSeqKey) ?? 0;
+
+  static Future<void> setDebugUploadOptIn(bool value) async {
+    await ensure();
+    if (!value) {
+      await _prefs!.setBool(_debugUploadKey, false);
+      await _prefs!.remove(_debugSessionKey);
+      await _prefs!.setInt(_debugSeqKey, 0);
+      return;
+    }
+    await _prefs!.setBool(_debugUploadKey, true);
+    if (debugUploadSession.isEmpty) {
+      final stamp = DateTime.now().toUtc().microsecondsSinceEpoch.toRadixString(16);
+      await _prefs!.setString(_debugSessionKey, stamp);
+    }
+  }
+
+  static Future<int> bumpDebugUploadSeq() async {
+    await ensure();
+    final next = debugUploadSeq + 1;
+    await _prefs!.setInt(_debugSeqKey, next);
+    return next;
   }
 
   /// Last LAN IPv4s we heard a hello from. Ethernet PCs unicast here because

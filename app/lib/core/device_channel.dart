@@ -131,6 +131,49 @@ class DeviceChannel {
     } catch (_) {}
   }
 
+  static Future<List<DropPermissionRow>> listPermissions() async {
+    if (!Platform.isAndroid) return const [];
+    try {
+      final raw = await _channel.invokeMethod<List<dynamic>>('listPermissions');
+      return [
+        for (final row in raw ?? const [])
+          if (row is Map) DropPermissionRow.fromMap(row),
+      ];
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  static Future<bool> requestPermission(String id) async {
+    if (!Platform.isAndroid || id.isEmpty) return false;
+    try {
+      return await _channel.invokeMethod<bool>('requestPermission', {'id': id}) ??
+          false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  static Future<bool> openAppSettings() async {
+    if (!Platform.isAndroid) return false;
+    try {
+      return await _channel.invokeMethod<bool>('openAppSettings') ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  static Future<Map<String, Object?>> debugExtras() async {
+    if (!Platform.isAndroid) return const {};
+    try {
+      final raw = await _channel.invokeMethod<dynamic>('debugExtras');
+      if (raw is Map) {
+        return {for (final e in raw.entries) '${e.key}': e.value};
+      }
+    } catch (_) {}
+    return const {};
+  }
+
   static Future<String> getDeviceName() async {
     if (!Platform.isAndroid) return '';
     try {
@@ -187,4 +230,45 @@ class DeviceChannel {
         if (row is String && row.isNotEmpty) row,
     };
   }
+}
+
+class DropPermissionRow {
+  const DropPermissionRow({
+    required this.id,
+    required this.title,
+    required this.subtitle,
+    required this.granted,
+    required this.canAsk,
+    required this.needsSettings,
+    required this.action,
+  });
+
+  final String id;
+  final String title;
+  final String subtitle;
+  final bool granted;
+  final bool canAsk;
+  final bool needsSettings;
+  final String action;
+
+  factory DropPermissionRow.fromMap(Map<dynamic, dynamic> map) {
+    return DropPermissionRow(
+      id: '${map['id'] ?? ''}',
+      title: '${map['title'] ?? ''}',
+      subtitle: '${map['subtitle'] ?? ''}',
+      granted: map['granted'] == true,
+      canAsk: map['canAsk'] == true,
+      needsSettings: map['needsSettings'] == true,
+      action: '${map['action'] ?? 'none'}',
+    );
+  }
+
+  Map<String, Object?> toJson() => {
+        'id': id,
+        'title': title,
+        'granted': granted,
+        'canAsk': canAsk,
+        'needsSettings': needsSettings,
+        'action': action,
+      };
 }

@@ -381,6 +381,9 @@ object OneDropP2p {
             return
         }
         holdMulticast()
+        lastScanError = null
+        lastAdvertiseError = null
+        lastSkip = ""
         val manager = ctx.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager ?: run {
             lastSkip = "no_bt_manager"
             return
@@ -430,7 +433,9 @@ object OneDropP2p {
             "multicastHeld" to (multicastLock?.isHeld == true),
             "skip" to lastSkip,
             "advertiseError" to lastAdvertiseError,
+            "advertiseErrorName" to OneDropPermissions.advertiseErrorName(lastAdvertiseError),
             "scanError" to lastScanError,
+            "scanErrorName" to OneDropPermissions.scanErrorName(lastScanError),
             "peerId" to peerId,
             "httpPort" to httpPort,
             "radioHeldForCamera" to radioHeldForCamera,
@@ -1058,6 +1063,8 @@ object OneDropP2p {
         override fun onScanFailed(errorCode: Int) {
             lastScanError = errorCode
             lastSkip = "scan_failed_$errorCode"
+            scanStarted = false
+            scanAppliedHard = false
             Log.w(TAG, "scan failed $errorCode")
         }
     }

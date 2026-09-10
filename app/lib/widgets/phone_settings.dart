@@ -11,7 +11,9 @@ import '../core/drop_prefs.dart';
 import '../core/panel_window.dart';
 import '../screens/file_explorer_screen.dart';
 import '../screens/nearby_debug_screen.dart';
+import '../screens/permissions_screen.dart';
 import '../services/air_grab_session.dart';
+import '../services/drop_debug_upload.dart';
 import '../services/drop_service.dart';
 import '../services/file_explorer_service.dart';
 
@@ -35,6 +37,7 @@ class _PhoneSettingsViewState extends State<PhoneSettingsView> {
   bool _launch = false;
   bool _airGrab = false;
   bool _imagesToCameraRoll = true;
+  bool _debugUpload = false;
 
   @override
   void initState() {
@@ -43,6 +46,7 @@ class _PhoneSettingsViewState extends State<PhoneSettingsView> {
     _name = TextEditingController(text: DropPrefs.dropDisplayName);
     _airGrab = DropPrefs.airGrabEnabled;
     _imagesToCameraRoll = DropPrefs.imagesToCameraRoll;
+    _debugUpload = DropPrefs.debugUploadOptIn;
     unawaited(_loadLaunch());
   }
 
@@ -295,6 +299,28 @@ class _PhoneSettingsViewState extends State<PhoneSettingsView> {
                       showChevron: true,
                       onTap: _chooseInbox,
                     ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 22),
+              SettingsSection(
+                title: 'Nearby',
+                child: SettingsCard(
+                  children: [
+                    if (Platform.isAndroid)
+                      SettingsNavTile(
+                        icon: Icons.shield_rounded,
+                        title: 'Permissions',
+                        subtitle: 'Nearby, camera, photos, and notifications',
+                        showChevron: true,
+                        onTap: () {
+                          Navigator.of(context).push(
+                            MaterialPageRoute<void>(
+                              builder: (_) => const PermissionsScreen(),
+                            ),
+                          );
+                        },
+                      ),
                     SettingsNavTile(
                       icon: Icons.bluetooth_searching_rounded,
                       title: 'Nearby debug',
@@ -306,6 +332,20 @@ class _PhoneSettingsViewState extends State<PhoneSettingsView> {
                             builder: (_) => const NearbyDebugScreen(),
                           ),
                         );
+                      },
+                    ),
+                    SettingsSwitchTile(
+                      secondary: settingsPastelIcon(
+                        Icons.cloud_upload_rounded,
+                        'debug',
+                      ),
+                      title: const Text('Send Nearby logs to AmL'),
+                      subtitle:
+                          'Uploads Bluetooth and Wi‑Fi status every few minutes. No photos or files. Turn off anytime.',
+                      value: _debugUpload,
+                      onChanged: (value) async {
+                        await DropDebugUpload.instance.setOptIn(value);
+                        if (mounted) setState(() => _debugUpload = value);
                       },
                     ),
                   ],

@@ -18,6 +18,7 @@ import '../core/device_channel.dart';
 import '../core/drop_prefs.dart';
 import '../core/host.dart';
 import '../core/labels.dart';
+import 'drop_debug_log.dart';
 import 'drop_lan.dart';
 
 Map<String, dynamic> _decodeOfferResponse(String raw) {
@@ -439,6 +440,7 @@ class DropService {
       );
       if (_localIpv4.isEmpty) {
         _note('no ipv4 — UDP announce will wait for Wi‑Fi');
+        DropDebugLog.event('no_ipv4');
       }
       _udp = await RawDatagramSocket.bind(
         InternetAddress.anyIPv4,
@@ -456,19 +458,7 @@ class DropService {
       await refreshLan();
       _broadcast();
       if (DropP2p.supported) {
-        _radio ??= DropP2p.sightings.listen(_onRadio);
-        await DropP2p.start(
-          peerId: _peerId,
-          name: DropPrefs.dropDisplayName,
-          port: _httpPort,
-          role: airRoleWire(localRole),
-          os: airOsWire(localOs),
-          files: true,
-        );
-        await DropP2p.setScanHard(true);
-        _note(DropP2p.lastError == null
-            ? 'radio start ok'
-            : 'radio start ${DropP2p.lastError}');
+        await _startRadio();
       } else {
         _note('radio unsupported on this OS');
       }
@@ -476,6 +466,30 @@ class DropService {
       lastError = '$error';
       _note('start failed $error');
       await stop();
+    }
+  }
+
+  Future<void> restartRadio() async {
+    if (!DropP2p.supported || !_running || _httpPort <= 0) return;
+    await _startRadio();
+  }
+
+  Future<void> _startRadio() async {
+    _radio ??= DropP2p.sightings.listen(_onRadio);
+    await DropP2p.start(
+      peerId: _peerId,
+      name: DropPrefs.dropDisplayName,
+      port: _httpPort,
+      role: airRoleWire(localRole),
+      os: airOsWire(localOs),
+      files: true,
+    );
+    await DropP2p.setScanHard(true);
+    if (DropP2p.lastError == null) {
+      _note('radio start ok');
+    } else {
+      _note('radio start ${DropP2p.lastError}');
+      DropDebugLog.event('radio', DropP2p.lastError);
     }
   }
 
@@ -505,8 +519,8 @@ class DropService {
   void _note(String line) {
     final stamp = DateTime.now().toUtc().toIso8601String().substring(11, 19);
     _debugLog.add('$stamp $line');
-    if (_debugLog.length > 80) {
-      _debugLog.removeRange(0, _debugLog.length - 80);
+    if (_debugLog.length > 160) {
+      _debugLog.removeRange(0, _debugLog.length - 160);
     }
   }
 
@@ -1284,29 +1298,32 @@ class DropInbox {
 typedef OpenFolderInExplorer = Future<void> Function(String path);
 
 Future<void> defaultOpenFolderInExplorer(String path) async {
-  final dir = Directory(path);
+  final native = p.normalize(path);
+  final dir = Directory(native);
   if (!dir.existsSync()) {
     dir.createSync(recursive: true);
   }
-  if (Platform.isWindows) {
-    await Process.start(
-      'explorer',
-      [dir.path],
-      mode: ProcessStartMode.detached,
-    );
-  } else if (Platform.isMacOS) {
-    await Process.start(
-      'open',
-      [dir.path],
-      mode: ProcessStartMode.detached,
-    );
-  } else {
-    await Process.start(
-      'xdg-open',
-      [dir.path],
-      mode: ProcessStartMode.detached,
-    );
-  }
+  try {
+    if (Platform.isWindows) {
+      // Bare `explorer C:\folder` often no-ops on Windows 11 when a
+      // shell window already exists. `start "" folder` uses the folder
+      // verb and brings a window forward.
+      final folder = native.replaceAll('/', r'\');
+      await Process.run('cmd.exe', ['/c', 'start', '', folder]);
+    } else if (Platform.isMacOS) {
+      await Process.start(
+        'open',
+        [native],
+        mode: ProcessStartMode.detached,
+      );
+    } else {
+      await Process.start(
+        'xdg-open',
+        [native],
+        mode: ProcessStartMode.detached,
+      );
+    }
+  } catch (_) {}
 }
 
 @visibleForTesting
