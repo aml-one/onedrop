@@ -58,6 +58,10 @@ object OneDropP2p {
     const val EVENTS = "one.aml.onedrop/p2p-peers"
     const val PERMISSION_REQUEST = 81
     private const val TAG = "OneDropP2p"
+    private const val DUTY_ADVERTISE_MS = 10_000L
+    private const val DUTY_SCAN_MS = 1_500L
+    private const val FRESH_SIGHTING_MS = 2_000L
+    private const val WAIT_FOR_PEER_MS = 10_000L
     private const val COMPANY = 0x0A11
     private const val COMPANY_NAME = 0x0A12
     private const val PREF_PEER = "beaconPeerId"
@@ -100,7 +104,9 @@ object OneDropP2p {
     private var boundNetwork: Network? = null
 
     private val devices = ConcurrentHashMap<String, BluetoothDevice>()
+    private val deviceSeenAt = ConcurrentHashMap<String, Long>()
     private var pendingConnect: MethodChannel.Result? = null
+    private var waitingConnectId: String? = null
     private var connectGen = 0
     private var connectDevice: BluetoothDevice? = null
     private var connectAttempt = 0
@@ -468,19 +474,27 @@ object OneDropP2p {
                 else -> "scan"
             },
             "connectAttempt" to connectAttempt,
+            "waitingConnect" to waitingConnectId,
         )
     }
 
-    /// Fire OS, ColorOS, and most API 30 radios cannot scan, advertise, and
-    /// be a GATT central/peripheral at once. Time-slice discovery there.
+    /// Fire OS, ColorOS, Xiaomi, and most API 30 radios cannot scan, advertise,
+    /// and be a GATT central/peripheral at once. Time-slice discovery there.
     private fun weakRadio(): Boolean {
         val mfr = Build.MANUFACTURER.lowercase()
+        val brand = Build.BRAND.lowercase()
         return mfr == "amazon" ||
             Build.VERSION.SDK_INT < 31 ||
             mfr == "oppo" ||
             mfr == "oneplus" ||
             mfr == "realme" ||
-            mfr.contains("oplus")
+            mfr.contains("oplus") ||
+            mfr.contains("xiaomi") ||
+            mfr == "redmi" ||
+            mfr == "poco" ||
+            brand.contains("xiaomi") ||
+            brand == "redmi" ||
+            brand == "poco"
     }
 
     private fun bluetoothAdapter(): BluetoothAdapter? {
@@ -571,11 +585,11 @@ object OneDropP2p {
         if (dutyAdvertisePhase) {
             stopScanQuiet()
             startAdvertise(adapter)
-            main.postDelayed(dutyTick, 6_000)
+            main.postDelayed(dutyTick, DUTY_ADVERTISE_MS)
         } else {
             stopAdvertiseQuiet()
             startScan(adapter)
-            main.postDelayed(dutyTick, 3_000)
+            main.postDelayed(dutyTick, DUTY_SCAN_MS)
         }
     }
 
@@ -778,6 +792,8 @@ object OneDropP2p {
         linkChar = null
         gattServiceRetry = false
         devices.clear()
+        deviceSeenAt.clear()
+        waitingConnectId = null
         pendingSightings.clear()
     }
 
@@ -802,29 +818,57 @@ object OneDropP2p {
         connectAttempt = 0
         gattLinked = false
         lastGattStatus = null
-        lastConnectNote = "connecting ${device.address}"
         val gen = ++connectGen
-        main.postDelayed({
-            if (gen != connectGen || pendingConnect == null) return@postDelayed
-            if (!gattLinked && connectAttempt < 2) {
-                lastConnectNote = "hung gatt=${lastGattStatus ?: "none"} try=$connectAttempt — retry"
-                Log.w(TAG, lastConnectNote)
-                openGatt(device, connectAttempt + 1)
-            }
-        }, 8_000)
         main.postDelayed({
             if (gen == connectGen) {
                 lastConnectNote = "timeout gatt=${lastGattStatus ?: "none"} try=$connectAttempt"
                 failConnect("Could not reach them nearby")
             }
-        }, 28_000)
+        }, 40_000)
+        val age = System.currentTimeMillis() - (deviceSeenAt[id] ?: 0L)
+        if (age in 0 until FRESH_SIGHTING_MS) {
+            lastConnectNote = "fresh sighting ${age}ms — connecting ${device.address}"
+            beginConnectNow(device, gen)
+            return
+        }
+        waitForPeerThenConnect(id, device, gen)
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun waitForPeerThenConnect(id: String, device: BluetoothDevice, gen: Int) {
+        waitingConnectId = id
+        lastConnectNote = "waiting for $id"
+        Log.i(TAG, lastConnectNote)
+        stopDutyCycle()
+        stopAdvertiseQuiet()
+        val adapter = bluetoothAdapter()
+        try {
+            adapter?.cancelDiscovery()
+        } catch (_: Exception) {
+        }
+        if (adapter != null) startScan(adapter)
+        main.postDelayed({
+            if (gen != connectGen || pendingConnect == null) return@postDelayed
+            if (waitingConnectId != id) return@postDelayed
+            lastConnectNote = "stale wait — connecting anyway"
+            beginConnectNow(connectDevice ?: device, gen)
+        }, WAIT_FOR_PEER_MS)
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun beginConnectNow(device: BluetoothDevice, gen: Int) {
+        if (gen != connectGen || pendingConnect == null) return
+        if (radioPausedForConnect) return
+        waitingConnectId = null
+        connectDevice = device
+        lastConnectNote = "connecting ${device.address}"
         // Scan/advertise/GATT-server while connectGatt is the classic
-        // Android 133 hang — Fire OS and ColorOS never fire a callback.
+        // Android hang — Fire OS, ColorOS, and HyperOS never fire a callback.
         pauseForConnect()
         main.postDelayed({
             if (gen != connectGen) return@postDelayed
             openGatt(device, 0)
-        }, 900)
+        }, 400)
     }
 
     @SuppressLint("MissingPermission")
@@ -833,9 +877,12 @@ object OneDropP2p {
         stopDutyCycle()
         stopScanQuiet()
         stopAdvertiseQuiet()
-        if (!weakRadio()) return
         closeGattServer()
         gattServerHeldOff = true
+        try {
+            bluetoothAdapter()?.cancelDiscovery()
+        } catch (_: Exception) {
+        }
     }
 
     @SuppressLint("MissingPermission")
@@ -862,8 +909,8 @@ object OneDropP2p {
     private fun openGatt(device: BluetoothDevice, attempt: Int) {
         if (pendingConnect == null) return
         connectAttempt = attempt
-        val autoConnect = attempt >= 2
-        val transport = if (attempt == 1 && Build.VERSION.SDK_INT >= 23) {
+        val autoConnect = attempt >= 1
+        val transport = if (attempt >= 2 && Build.VERSION.SDK_INT >= 23) {
             BluetoothDevice.TRANSPORT_AUTO
         } else {
             BluetoothDevice.TRANSPORT_LE
@@ -880,23 +927,37 @@ object OneDropP2p {
         }
         activeGatt = null
         val ctx = app ?: return failConnect("Gallery is not open")
+        val gen = connectGen
         try {
-            activeGatt = if (Build.VERSION.SDK_INT >= 23) {
-                device.connectGatt(ctx, autoConnect, gattClientCallback, transport)
-            } else {
-                @Suppress("DEPRECATION")
-                device.connectGatt(ctx, autoConnect, gattClientCallback)
+            activeGatt = when {
+                Build.VERSION.SDK_INT >= 26 -> device.connectGatt(
+                    ctx,
+                    autoConnect,
+                    gattClientCallback,
+                    transport,
+                    BluetoothDevice.PHY_LE_1M,
+                    main,
+                )
+                Build.VERSION.SDK_INT >= 23 ->
+                    device.connectGatt(ctx, autoConnect, gattClientCallback, transport)
+                else -> {
+                    @Suppress("DEPRECATION")
+                    device.connectGatt(ctx, autoConnect, gattClientCallback)
+                }
             }
             if (activeGatt == null) {
                 failConnect("Bluetooth failed")
                 return
             }
-            if (!autoConnect) {
-                try {
-                    activeGatt?.connect()
-                } catch (_: Exception) {
+            main.postDelayed({
+                if (gen != connectGen || pendingConnect == null) return@postDelayed
+                if (!gattLinked && connectAttempt == attempt && attempt < 2) {
+                    lastConnectNote =
+                        "hung gatt=${lastGattStatus ?: "none"} try=$attempt — retry"
+                    Log.w(TAG, lastConnectNote)
+                    openGatt(device, attempt + 1)
                 }
-            }
+            }, 8_000)
         } catch (error: Exception) {
             failConnect(error.message ?: "Bluetooth failed")
         }
@@ -931,6 +992,7 @@ object OneDropP2p {
         val pending = pendingConnect ?: return
         connectGen++
         pendingConnect = null
+        waitingConnectId = null
         connectDevice = null
         try {
             activeGatt?.close()
@@ -953,6 +1015,7 @@ object OneDropP2p {
         val pending = pendingConnect ?: return
         connectGen++
         pendingConnect = null
+        waitingConnectId = null
         connectDevice = null
         lastConnectNote = "linked $host:$port"
         try {
@@ -1262,6 +1325,12 @@ object OneDropP2p {
             ?: record.deviceName?.toByteArray(Charsets.UTF_8)
         val sighting = parseBeacon(beacon, name) ?: return
         devices[sighting.id] = result.device
+        deviceSeenAt[sighting.id] = System.currentTimeMillis()
+        val waiting = waitingConnectId
+        if (waiting == sighting.id && pendingConnect != null) {
+            val gen = connectGen
+            main.post { beginConnectNow(result.device, gen) }
+        }
         emitPeer(
             sighting.id,
             sighting.name,
