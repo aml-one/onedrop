@@ -106,8 +106,11 @@ object OneDropP2p {
     private var connectAttempt = 0
     private var gattLinked = false
     private var radioPausedForConnect = false
+    private var gattServerHeldOff = false
+    private var gattServiceRetry = false
     private var lastConnectNote = ""
     private var lastGattStatus: Int? = null
+    private var lastGattServerStatus: Int? = null
     private var activeGatt: BluetoothGatt? = null
     private var advertiseStarted = false
     private var scanStarted = false
@@ -117,6 +120,9 @@ object OneDropP2p {
     private var multicastLock: WifiManager.MulticastLock? = null
     @Volatile
     private var radioHeldForCamera = false
+    private var dutyRunning = false
+    private var dutyAdvertisePhase = true
+    private val dutyTick = Runnable { tickDutyCycle() }
 
     fun attach(engine: FlutterEngine, context: Context) {
         app = context.applicationContext
@@ -289,6 +295,7 @@ object OneDropP2p {
         if (!running || radioHeldForCamera) return
         val ctx = app ?: return
         if (!hasBlePermissions(ctx)) return
+        if (dutyRunning) return
         val adapter = bluetoothAdapter() ?: return
         startScan(adapter)
     }
@@ -413,8 +420,13 @@ object OneDropP2p {
             lastSkip = "location_off"
             Log.w(TAG, "Location is off — BLE scan is empty on most phones")
         }
-        startAdvertise(adapter)
-        startScan(adapter)
+        if (weakRadio()) {
+            startDutyCycle(adapter)
+        } else {
+            stopDutyCycle()
+            startAdvertise(adapter)
+            startScan(adapter)
+        }
     }
 
     private fun debugStatus(): HashMap<String, Any?> {
@@ -447,8 +459,28 @@ object OneDropP2p {
             "radioHeldForCamera" to radioHeldForCamera,
             "lastConnect" to lastConnectNote,
             "lastGattStatus" to lastGattStatus,
+            "lastGattServer" to lastGattServerStatus,
+            "gattServer" to (gattServer != null),
+            "weakRadio" to weakRadio(),
+            "dutyPhase" to when {
+                !dutyRunning -> "off"
+                dutyAdvertisePhase -> "advertise"
+                else -> "scan"
+            },
             "connectAttempt" to connectAttempt,
         )
+    }
+
+    /// Fire OS, ColorOS, and most API 30 radios cannot scan, advertise, and
+    /// be a GATT central/peripheral at once. Time-slice discovery there.
+    private fun weakRadio(): Boolean {
+        val mfr = Build.MANUFACTURER.lowercase()
+        return mfr == "amazon" ||
+            Build.VERSION.SDK_INT < 31 ||
+            mfr == "oppo" ||
+            mfr == "oneplus" ||
+            mfr == "realme" ||
+            mfr.contains("oplus")
     }
 
     private fun bluetoothAdapter(): BluetoothAdapter? {
@@ -495,19 +527,75 @@ object OneDropP2p {
 
     @SuppressLint("MissingPermission")
     private fun pauseDiscovery() {
+        stopDutyCycle()
+        stopScanQuiet()
+        stopAdvertiseQuiet()
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun stopScanQuiet() {
         try {
             if (scanStarted) scanner?.stopScan(scanCallback)
         } catch (_: Exception) {
         }
         scanStarted = false
         scanAppliedHard = false
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun stopAdvertiseQuiet() {
         try {
             if (advertiseStarted) advertiser?.stopAdvertising(advertiseCallback)
         } catch (_: Exception) {
         }
         advertiseStarted = false
         advertisedKey = ""
-        advertiseCompact = false
+    }
+
+    private fun stopDutyCycle() {
+        dutyRunning = false
+        main.removeCallbacks(dutyTick)
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun startDutyCycle(adapter: BluetoothAdapter) {
+        stopDutyCycle()
+        dutyRunning = true
+        dutyAdvertisePhase = true
+        applyDutyPhase(adapter)
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun applyDutyPhase(adapter: BluetoothAdapter) {
+        if (!dutyRunning || radioPausedForConnect || radioHeldForCamera || !running) return
+        if (dutyAdvertisePhase) {
+            stopScanQuiet()
+            startAdvertise(adapter)
+            main.postDelayed(dutyTick, 6_000)
+        } else {
+            stopAdvertiseQuiet()
+            startScan(adapter)
+            main.postDelayed(dutyTick, 3_000)
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun tickDutyCycle() {
+        if (!dutyRunning || radioPausedForConnect || radioHeldForCamera || !running) return
+        dutyAdvertisePhase = !dutyAdvertisePhase
+        val adapter = bluetoothAdapter() ?: return
+        applyDutyPhase(adapter)
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun closeGattServer() {
+        try {
+            gattServer?.close()
+        } catch (_: Exception) {
+        }
+        gattServer = null
+        infoChar = null
+        linkChar = null
     }
 
     @SuppressLint("MissingPermission")
@@ -686,6 +774,9 @@ object OneDropP2p {
         } catch (_: Exception) {
         }
         gattServer = null
+        infoChar = null
+        linkChar = null
+        gattServiceRetry = false
         devices.clear()
         pendingSightings.clear()
     }
@@ -714,50 +805,57 @@ object OneDropP2p {
         lastConnectNote = "connecting ${device.address}"
         val gen = ++connectGen
         main.postDelayed({
+            if (gen != connectGen || pendingConnect == null) return@postDelayed
+            if (!gattLinked && connectAttempt < 2) {
+                lastConnectNote = "hung gatt=${lastGattStatus ?: "none"} try=$connectAttempt — retry"
+                Log.w(TAG, lastConnectNote)
+                openGatt(device, connectAttempt + 1)
+            }
+        }, 8_000)
+        main.postDelayed({
             if (gen == connectGen) {
                 lastConnectNote = "timeout gatt=${lastGattStatus ?: "none"} try=$connectAttempt"
                 failConnect("Could not reach them nearby")
             }
         }, 28_000)
-        // Scan while connectGatt is the classic Android 133 hang — Fire OS
-        // and API 30 never fire a GATT callback, then Dart shows this timeout.
+        // Scan/advertise/GATT-server while connectGatt is the classic
+        // Android 133 hang — Fire OS and ColorOS never fire a callback.
         pauseForConnect()
         main.postDelayed({
             if (gen != connectGen) return@postDelayed
             openGatt(device, 0)
-        }, 450)
+        }, 900)
     }
 
     @SuppressLint("MissingPermission")
     private fun pauseForConnect() {
         radioPausedForConnect = true
-        try {
-            if (scanStarted) scanner?.stopScan(scanCallback)
-        } catch (_: Exception) {
-        }
-        scanStarted = false
-        scanAppliedHard = false
-        // Cheap dual-role chips (Fire tablets, many API 30 radios) cannot
-        // advertise and be GATT central at once. Pause ads on the sender only.
-        val weakRadio = Build.MANUFACTURER.equals("Amazon", ignoreCase = true) ||
-            Build.VERSION.SDK_INT < 31
-        if (!weakRadio) return
-        try {
-            if (advertiseStarted) advertiser?.stopAdvertising(advertiseCallback)
-        } catch (_: Exception) {
-        }
-        advertiseStarted = false
-        advertisedKey = ""
+        stopDutyCycle()
+        stopScanQuiet()
+        stopAdvertiseQuiet()
+        if (!weakRadio()) return
+        closeGattServer()
+        gattServerHeldOff = true
     }
 
     @SuppressLint("MissingPermission")
     private fun resumeAfterConnect() {
-        if (!radioPausedForConnect) return
+        if (!radioPausedForConnect && !gattServerHeldOff) return
         radioPausedForConnect = false
+        if (gattServerHeldOff) {
+            gattServerHeldOff = false
+            val ctx = app
+            val manager = ctx?.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
+            if (manager != null) openGattServer(manager)
+        }
         if (!running || radioHeldForCamera) return
         val adapter = bluetoothAdapter() ?: return
-        startAdvertise(adapter)
-        startScan(adapter)
+        if (weakRadio()) {
+            startDutyCycle(adapter)
+        } else {
+            startAdvertise(adapter)
+            startScan(adapter)
+        }
     }
 
     @SuppressLint("MissingPermission")
@@ -788,6 +886,16 @@ object OneDropP2p {
             } else {
                 @Suppress("DEPRECATION")
                 device.connectGatt(ctx, autoConnect, gattClientCallback)
+            }
+            if (activeGatt == null) {
+                failConnect("Bluetooth failed")
+                return
+            }
+            if (!autoConnect) {
+                try {
+                    activeGatt?.connect()
+                } catch (_: Exception) {
+                }
             }
         } catch (error: Exception) {
             failConnect(error.message ?: "Bluetooth failed")
@@ -1183,8 +1291,40 @@ object OneDropP2p {
     }
 
     private val gattServerCallback = object : BluetoothGattServerCallback() {
+        override fun onServiceAdded(status: Int, service: BluetoothGattService) {
+            lastGattServerStatus = status
+            lastConnectNote = "gatt service added status=$status"
+            Log.i(TAG, lastConnectNote)
+            if (status != BluetoothGatt.GATT_SUCCESS && !gattServiceRetry) {
+                gattServiceRetry = true
+                main.post {
+                    closeGattServer()
+                    val ctx = app ?: return@post
+                    val manager = ctx.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
+                    if (manager != null) openGattServer(manager)
+                }
+            }
+        }
+
         override fun onConnectionStateChange(device: BluetoothDevice, status: Int, newState: Int) {
-            // AP stays up until the sender writes "done" or One Drop stops.
+            lastGattServerStatus = status
+            lastConnectNote = "gatt server state=$newState status=$status"
+            Log.i(TAG, lastConnectNote)
+            if (newState == BluetoothProfile.STATE_CONNECTED) {
+                // Incoming GATT needs the scanner off on cheap radios.
+                stopDutyCycle()
+                stopScanQuiet()
+                return
+            }
+            if (newState == BluetoothProfile.STATE_DISCONNECTED &&
+                dartSession &&
+                weakRadio() &&
+                !radioPausedForConnect &&
+                running &&
+                !radioHeldForCamera
+            ) {
+                bluetoothAdapter()?.let { startDutyCycle(it) }
+            }
         }
 
         override fun onCharacteristicReadRequest(
