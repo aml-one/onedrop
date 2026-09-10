@@ -89,12 +89,12 @@ class DropPrefs {
 
   static DropAcceptMode get dropAcceptMode {
     switch (_prefs?.getString(_dropKey)) {
-      case 'known':
-        return DropAcceptMode.known;
+      case 'ask':
+        return DropAcceptMode.ask;
       case 'everyone':
         return DropAcceptMode.everyone;
       default:
-        return DropAcceptMode.ask;
+        return DropAcceptMode.known;
     }
   }
 

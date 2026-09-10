@@ -485,6 +485,7 @@ class DropService {
       files: true,
     );
     await DropP2p.setScanHard(true);
+    await DropP2p.debugStatus();
     if (DropP2p.lastError == null) {
       _note('radio start ok');
     } else {
@@ -623,7 +624,14 @@ class DropService {
           ),
           force: true,
         );
-        final link = await _awaitOrCancel(DropP2p.connect(peer.id), cancel);
+        final DropP2pLink link;
+        try {
+          link = await _awaitOrCancel(DropP2p.connect(peer.id), cancel);
+        } catch (error) {
+          _note('ble link $error');
+          DropDebugLog.event('connect', '$error');
+          rethrow;
+        }
         if (cancel?.isCancelled == true) throw DropCancelled();
         target = DropPeer(
           id: peer.id,

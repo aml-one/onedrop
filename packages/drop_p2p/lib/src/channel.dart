@@ -120,6 +120,14 @@ class DropP2p {
     try {
       final raw = await _methods.invokeMethod<dynamic>('debugStatus');
       if (raw is Map) {
+        final skip = '${raw['skip'] ?? ''}'.trim();
+        final radioUp = raw['scanStarted'] == true ||
+            raw['advertiseStarted'] == true;
+        if (radioUp && skip.isEmpty) {
+          lastError = null;
+        } else if (skip.isNotEmpty) {
+          lastError = skip;
+        }
         return {
           'supported': true,
           'lastError': lastError,

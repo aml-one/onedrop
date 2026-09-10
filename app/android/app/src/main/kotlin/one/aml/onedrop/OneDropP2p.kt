@@ -102,6 +102,12 @@ object OneDropP2p {
     private val devices = ConcurrentHashMap<String, BluetoothDevice>()
     private var pendingConnect: MethodChannel.Result? = null
     private var connectGen = 0
+    private var connectDevice: BluetoothDevice? = null
+    private var connectAttempt = 0
+    private var gattLinked = false
+    private var radioPausedForConnect = false
+    private var lastConnectNote = ""
+    private var lastGattStatus: Int? = null
     private var activeGatt: BluetoothGatt? = null
     private var advertiseStarted = false
     private var scanStarted = false
@@ -439,6 +445,9 @@ object OneDropP2p {
             "peerId" to peerId,
             "httpPort" to httpPort,
             "radioHeldForCamera" to radioHeldForCamera,
+            "lastConnect" to lastConnectNote,
+            "lastGattStatus" to lastGattStatus,
+            "connectAttempt" to connectAttempt,
         )
     }
 
@@ -698,16 +707,87 @@ object OneDropP2p {
             return
         }
         pendingConnect = result
+        connectDevice = device
+        connectAttempt = 0
+        gattLinked = false
+        lastGattStatus = null
+        lastConnectNote = "connecting ${device.address}"
         val gen = ++connectGen
         main.postDelayed({
-            if (gen == connectGen) failConnect("Could not reach them nearby")
-        }, 25_000)
+            if (gen == connectGen) {
+                lastConnectNote = "timeout gatt=${lastGattStatus ?: "none"} try=$connectAttempt"
+                failConnect("Could not reach them nearby")
+            }
+        }, 28_000)
+        // Scan while connectGatt is the classic Android 133 hang — Fire OS
+        // and API 30 never fire a GATT callback, then Dart shows this timeout.
+        pauseForConnect()
+        main.postDelayed({
+            if (gen != connectGen) return@postDelayed
+            openGatt(device, 0)
+        }, 450)
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun pauseForConnect() {
+        radioPausedForConnect = true
+        try {
+            if (scanStarted) scanner?.stopScan(scanCallback)
+        } catch (_: Exception) {
+        }
+        scanStarted = false
+        scanAppliedHard = false
+        // Cheap dual-role chips (Fire tablets, many API 30 radios) cannot
+        // advertise and be GATT central at once. Pause ads on the sender only.
+        val weakRadio = Build.MANUFACTURER.equals("Amazon", ignoreCase = true) ||
+            Build.VERSION.SDK_INT < 31
+        if (!weakRadio) return
+        try {
+            if (advertiseStarted) advertiser?.stopAdvertising(advertiseCallback)
+        } catch (_: Exception) {
+        }
+        advertiseStarted = false
+        advertisedKey = ""
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun resumeAfterConnect() {
+        if (!radioPausedForConnect) return
+        radioPausedForConnect = false
+        if (!running || radioHeldForCamera) return
+        val adapter = bluetoothAdapter() ?: return
+        startAdvertise(adapter)
+        startScan(adapter)
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun openGatt(device: BluetoothDevice, attempt: Int) {
+        if (pendingConnect == null) return
+        connectAttempt = attempt
+        val autoConnect = attempt >= 2
+        val transport = if (attempt == 1 && Build.VERSION.SDK_INT >= 23) {
+            BluetoothDevice.TRANSPORT_AUTO
+        } else {
+            BluetoothDevice.TRANSPORT_LE
+        }
+        lastConnectNote = "gatt try=$attempt auto=$autoConnect transport=$transport"
+        Log.i(TAG, lastConnectNote)
+        try {
+            activeGatt?.disconnect()
+        } catch (_: Exception) {
+        }
+        try {
+            activeGatt?.close()
+        } catch (_: Exception) {
+        }
+        activeGatt = null
+        val ctx = app ?: return failConnect("Gallery is not open")
         try {
             activeGatt = if (Build.VERSION.SDK_INT >= 23) {
-                device.connectGatt(ctx, false, gattClientCallback, BluetoothDevice.TRANSPORT_LE)
+                device.connectGatt(ctx, autoConnect, gattClientCallback, transport)
             } else {
                 @Suppress("DEPRECATION")
-                device.connectGatt(ctx, false, gattClientCallback)
+                device.connectGatt(ctx, autoConnect, gattClientCallback)
             }
         } catch (error: Exception) {
             failConnect(error.message ?: "Bluetooth failed")
@@ -715,15 +795,41 @@ object OneDropP2p {
     }
 
     @SuppressLint("MissingPermission")
+    private fun retryGattOrFail(gatt: BluetoothGatt, status: Int) {
+        lastGattStatus = status
+        lastConnectNote = "gatt dropped status=$status try=$connectAttempt"
+        Log.w(TAG, lastConnectNote)
+        if (gattLinked) {
+            failConnect("Bluetooth dropped")
+            return
+        }
+        val device = connectDevice ?: gatt.device
+        if (connectAttempt < 2 && pendingConnect != null) {
+            main.postDelayed({
+                if (pendingConnect == null) return@postDelayed
+                openGatt(device, connectAttempt + 1)
+            }, 400L * (connectAttempt + 1))
+            return
+        }
+        failConnect("Could not reach them nearby")
+    }
+
+    @SuppressLint("MissingPermission")
     private fun failConnect(message: String) {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            main.post { failConnect(message) }
+            return
+        }
         val pending = pendingConnect ?: return
         connectGen++
         pendingConnect = null
+        connectDevice = null
         try {
             activeGatt?.close()
         } catch (_: Exception) {
         }
         activeGatt = null
+        resumeAfterConnect()
         try {
             pending.error("link", message, null)
         } catch (_: Exception) {
@@ -732,9 +838,15 @@ object OneDropP2p {
 
     @SuppressLint("MissingPermission")
     private fun succeedConnect(host: String, port: Int) {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            main.post { succeedConnect(host, port) }
+            return
+        }
         val pending = pendingConnect ?: return
         connectGen++
         pendingConnect = null
+        connectDevice = null
+        lastConnectNote = "linked $host:$port"
         try {
             pending.success(mapOf("host" to host, "port" to port))
         } catch (_: Exception) {
@@ -792,6 +904,7 @@ object OneDropP2p {
         } catch (_: Exception) {
         }
         activeGatt = null
+        resumeAfterConnect()
     }
 
     private fun stopHotspot() {
@@ -1154,17 +1267,31 @@ object OneDropP2p {
     private val gattClientCallback = object : BluetoothGattCallback() {
         @SuppressLint("MissingPermission")
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
+            lastGattStatus = status
+            lastConnectNote = "gatt state=$newState status=$status try=$connectAttempt"
+            Log.i(TAG, lastConnectNote)
             if (newState == BluetoothProfile.STATE_CONNECTED) {
+                gattLinked = true
+                try {
+                    gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
+                } catch (_: Exception) {
+                }
                 gatt.discoverServices()
                 return
             }
             if (newState == BluetoothProfile.STATE_DISCONNECTED && pendingConnect != null) {
-                main.post { failConnect("Bluetooth dropped") }
+                retryGattOrFail(gatt, status)
             }
         }
 
         @SuppressLint("MissingPermission")
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
+            lastGattStatus = status
+            if (status != BluetoothGatt.GATT_SUCCESS) {
+                lastConnectNote = "discover_failed_$status"
+                main.post { failConnect("That device is not ready for One Drop") }
+                return
+            }
             val service = gatt.getService(SERVICE_UUID)
             val link = service?.getCharacteristic(LINK_UUID)
             if (link == null) {

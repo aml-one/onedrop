@@ -13,6 +13,11 @@ void main() {
     await DropPrefs.ensure();
   });
 
+  test('Who can send defaults to Known', () {
+    expect(DropPrefs.dropAcceptMode, DropAcceptMode.known);
+    expect(DropPrefs.autoAccepts('stranger'), isFalse);
+  });
+
   test('Known auto-accepts remembered peers only', () async {
     await DropPrefs.setDropAcceptMode(DropAcceptMode.known);
     expect(DropPrefs.autoAccepts('peer-a'), isFalse);

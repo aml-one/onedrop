@@ -29,7 +29,8 @@ class DropDebugLog {
         kind == 'scan' ||
         kind == 'perm' ||
         kind == 'resume' ||
-        kind == 'opt_in';
+        kind == 'opt_in' ||
+        kind == 'connect';
     if (significant) onSignificant?.call(kind);
   }
 }
