@@ -56,7 +56,7 @@ Future<String> uploadOneDropDebug() async {
     final response = await request.close();
     final body = await response.transform(utf8.decoder).join();
     if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw StateError('Upload failed (${response.statusCode})');
+      throw StateError('HTTP ${response.statusCode}');
     }
     final decoded = jsonDecode(body);
     if (decoded is Map && decoded['id'] is String) {

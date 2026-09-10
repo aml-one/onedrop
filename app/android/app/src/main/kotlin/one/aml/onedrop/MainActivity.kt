@@ -8,6 +8,7 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.SystemClock
 import android.provider.OpenableColumns
 import android.provider.Settings
 import androidx.core.app.ActivityCompat
@@ -19,6 +20,7 @@ import java.util.LinkedHashSet
 
 class MainActivity : FlutterActivity() {
     private var firstRunInFlight = false
+    private var firstRunAt = 0L
     private var pendingFirstRun: MethodChannel.Result? = null
     private val pendingShares = ArrayList<String>()
 
@@ -57,16 +59,34 @@ class MainActivity : FlutterActivity() {
 
     fun firstRunBusy(): Boolean = firstRunInFlight
 
+    fun runtimeAlreadyAsked(): Boolean =
+        overlayPrefs().getBoolean(PREF_ASKED_RUNTIME, false)
+
     fun ensureFirstRunPermissions(result: MethodChannel.Result? = null) {
         if (result != null) pendingFirstRun = result
-        if (firstRunInFlight) return
+        if (firstRunInFlight) {
+            // ColorOS / MIUI sometimes swallows the sheet with no result.
+            // Do not start a second one — that blinks the status bar.
+            if (SystemClock.elapsedRealtime() - firstRunAt < 4_000L) return
+            firstRunInFlight = false
+            markRuntimeAsked()
+            maybeRequestOverlay()
+            completeFirstRun()
+            return
+        }
         val missing = missingFirstRunRuntime()
         if (missing.isEmpty()) {
             maybeRequestOverlay()
             completeFirstRun()
             return
         }
+        if (runtimeAlreadyAsked()) {
+            maybeRequestOverlay()
+            completeFirstRun()
+            return
+        }
         firstRunInFlight = true
+        firstRunAt = SystemClock.elapsedRealtime()
         ActivityCompat.requestPermissions(this, missing, FIRST_RUN_REQUEST)
     }
 
@@ -107,6 +127,7 @@ class MainActivity : FlutterActivity() {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == FIRST_RUN_REQUEST) {
             firstRunInFlight = false
+            markRuntimeAsked()
             val cam = permissions.indexOf(Manifest.permission.CAMERA)
             if (cam >= 0) {
                 AirGrabTracker.onPermission(
@@ -126,6 +147,7 @@ class MainActivity : FlutterActivity() {
             )
         }
         if (requestCode == OneDropP2p.PERMISSION_REQUEST) {
+            markRuntimeAsked()
             OneDropP2p.onPermissionResult()
         }
     }
@@ -231,16 +253,18 @@ class MainActivity : FlutterActivity() {
         overlayPrefs().edit().putBoolean(PREF_ASKED_OVERLAY, true).apply()
     }
 
+    private fun markRuntimeAsked() {
+        overlayPrefs().edit().putBoolean(PREF_ASKED_RUNTIME, true).apply()
+    }
+
     private fun missingFirstRunRuntime(): Array<String> {
-        return firstRunRuntimePermissions().filter {
-            checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED
-        }.toTypedArray()
+        return OneDropP2p.runtimeDangerous(this, firstRunRuntimePermissions().toTypedArray())
     }
 
     private fun firstRunRuntimePermissions(): List<String> {
         val out = LinkedHashSet<String>()
         out.add(Manifest.permission.CAMERA)
-        out.addAll(OneDropP2p.neededPermissions())
+        out.addAll(OneDropP2p.blePermissions())
         if (Build.VERSION.SDK_INT >= 33) {
             out.add(Manifest.permission.POST_NOTIFICATIONS)
             out.add(Manifest.permission.READ_MEDIA_IMAGES)
@@ -259,5 +283,6 @@ class MainActivity : FlutterActivity() {
         private const val NOTIFY_REQUEST = 72
         private const val FIRST_RUN_REQUEST = 77
         private const val PREF_ASKED_OVERLAY = "askedOverlay"
+        private const val PREF_ASKED_RUNTIME = "askedRuntimePerms"
     }
 }

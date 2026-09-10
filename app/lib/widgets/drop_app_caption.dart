@@ -26,36 +26,37 @@ class DropAppCaption extends StatelessWidget {
     final files = peer.acceptsFiles;
     final color = files ? AmlTheme.sky : AmlTheme.pink;
     final icon = files ? Icons.folder_rounded : Icons.photo_rounded;
-    return Row(
-      mainAxisAlignment:
-          center ? MainAxisAlignment.center : MainAxisAlignment.start,
+    final mark = DecoratedBox(
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.18),
+        shape: BoxShape.circle,
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(2),
+        child: Icon(icon, size: fontSize + 1, color: color),
+      ),
+    );
+    final label = Text(
+      dropPeerAppLine(peer, known: known, compact: compact),
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+      style: TextStyle(
+        fontWeight: FontWeight.w700,
+        fontSize: fontSize,
+        height: 1.1,
+        color: color,
+      ),
+    );
+    final row = Row(
+      mainAxisSize: MainAxisSize.min,
+      mainAxisAlignment: MainAxisAlignment.center,
       children: [
-        DecoratedBox(
-          decoration: BoxDecoration(
-            color: color.withValues(alpha: 0.18),
-            shape: BoxShape.circle,
-          ),
-          child: Padding(
-            padding: const EdgeInsets.all(2),
-            child: Icon(icon, size: fontSize + 1, color: color),
-          ),
-        ),
-        const SizedBox(width: 4),
-        Expanded(
-          child: Text(
-            dropPeerAppLine(peer, known: known, compact: compact),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            textAlign: center ? TextAlign.center : TextAlign.start,
-            style: TextStyle(
-              fontWeight: FontWeight.w700,
-              fontSize: fontSize,
-              height: 1.1,
-              color: color,
-            ),
-          ),
-        ),
+        mark,
+        const SizedBox(width: 2),
+        if (center) label else Flexible(child: label),
       ],
     );
+    if (center) return Center(child: row);
+    return row;
   }
 }

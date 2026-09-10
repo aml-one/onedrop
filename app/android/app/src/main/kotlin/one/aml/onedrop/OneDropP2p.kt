@@ -24,6 +24,7 @@ import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.Context
 import android.content.pm.PackageManager
+import android.content.pm.PermissionInfo
 import android.location.LocationManager
 import android.net.ConnectivityManager
 import android.net.Network
@@ -166,73 +167,80 @@ object OneDropP2p {
         )
     }
 
-    fun neededPermissions(): Array<String> {
-        return if (Build.VERSION.SDK_INT >= 33) {
-            arrayOf(
-                Manifest.permission.BLUETOOTH_SCAN,
-                Manifest.permission.BLUETOOTH_ADVERTISE,
-                Manifest.permission.BLUETOOTH_CONNECT,
-                Manifest.permission.ACCESS_FINE_LOCATION,
-                Manifest.permission.NEARBY_WIFI_DEVICES,
-            )
-        } else if (Build.VERSION.SDK_INT >= 31) {
-            arrayOf(
-                Manifest.permission.BLUETOOTH_SCAN,
-                Manifest.permission.BLUETOOTH_ADVERTISE,
-                Manifest.permission.BLUETOOTH_CONNECT,
-                Manifest.permission.ACCESS_FINE_LOCATION,
-            )
-        } else {
-            arrayOf(
-                Manifest.permission.ACCESS_FINE_LOCATION,
-                Manifest.permission.BLUETOOTH,
-                Manifest.permission.BLUETOOTH_ADMIN,
-            )
-        }
-    }
+    fun neededPermissions(): Array<String> = blePermissions()
 
-    /// BLE scan/advertise. Nearby Wi‑Fi is for the hotspot path only —
-    /// Fire OS often never grants it, which used to leave the radar empty.
+    /// Runtime BLE permissions only. Install-time BLUETOOTH / BLUETOOTH_ADMIN
+    /// are not requested — ColorOS and MIUI flash the status bar and then
+    /// kill the app when those show up in a runtime sheet. Nearby Wi‑Fi is
+    /// the hotspot path, not discovery, so it is not a Nearby blocker.
     fun blePermissions(): Array<String> {
         return if (Build.VERSION.SDK_INT >= 31) {
             arrayOf(
                 Manifest.permission.BLUETOOTH_SCAN,
                 Manifest.permission.BLUETOOTH_ADVERTISE,
                 Manifest.permission.BLUETOOTH_CONNECT,
-                Manifest.permission.ACCESS_FINE_LOCATION,
             )
         } else {
             arrayOf(
                 Manifest.permission.ACCESS_FINE_LOCATION,
-                Manifest.permission.BLUETOOTH,
-                Manifest.permission.BLUETOOTH_ADMIN,
+                Manifest.permission.ACCESS_COARSE_LOCATION,
             )
         }
     }
 
-    fun hasPermissions(context: Context): Boolean {
-        return neededPermissions().all {
+    fun requiredBlePermissions(): Array<String> {
+        return if (Build.VERSION.SDK_INT >= 31) {
+            arrayOf(
+                Manifest.permission.BLUETOOTH_SCAN,
+                Manifest.permission.BLUETOOTH_ADVERTISE,
+                Manifest.permission.BLUETOOTH_CONNECT,
+            )
+        } else {
+            arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
+        }
+    }
+
+    fun hasPermissions(context: Context): Boolean = hasBlePermissions(context)
+
+    fun hasBlePermissions(context: Context): Boolean {
+        return requiredBlePermissions().all {
             context.checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED
         }
     }
 
-    fun hasBlePermissions(context: Context): Boolean {
-        return blePermissions().all {
-            context.checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED
+    fun missingBlePermissions(context: Context): List<String> {
+        return requiredBlePermissions().filter {
+            context.checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED
         }
     }
 
     fun requestPermissions(activity: MainActivity) {
         if (activity.firstRunBusy()) return
-        val missing = neededPermissions().filter {
-            activity.checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED
-        }
+        if (activity.runtimeAlreadyAsked()) return
+        val missing = runtimeDangerous(activity, blePermissions())
         if (missing.isEmpty()) return
         ActivityCompat.requestPermissions(
             activity,
-            missing.toTypedArray(),
+            missing,
             PERMISSION_REQUEST,
         )
+    }
+
+    fun runtimeDangerous(context: Context, names: Array<String>): Array<String> {
+        return names.filter { name ->
+            isDangerousRuntime(context, name) &&
+                context.checkSelfPermission(name) != PackageManager.PERMISSION_GRANTED
+        }.toTypedArray()
+    }
+
+    fun isDangerousRuntime(context: Context, permission: String): Boolean {
+        return try {
+            val info = context.packageManager.getPermissionInfo(permission, 0)
+            val level = info.protectionLevel and PermissionInfo.PROTECTION_MASK_BASE
+            level == PermissionInfo.PROTECTION_DANGEROUS
+        } catch (_: Exception) {
+            false
+        }
     }
 
     fun onPermissionResult() {
@@ -246,11 +254,14 @@ object OneDropP2p {
     fun onActivityResumed(activity: MainActivity) {
         if (!running) return
         if (radioHeldForCamera) return
-        if (!hasBlePermissions(activity)) {
-            requestPermissions(activity)
+        if (hasBlePermissions(activity)) {
+            startRadio()
             return
         }
-        startRadio()
+        // Asking again on every resume is what blinked the Redmi status
+        // bar until MIUI killed OneDrop. First-run owns the one prompt.
+        if (activity.firstRunBusy() || activity.runtimeAlreadyAsked()) return
+        requestPermissions(activity)
     }
 
     /// BLE id from the listen service, even before Dart binds HTTP.
@@ -414,6 +425,7 @@ object OneDropP2p {
             "leFeature" to (ctx?.packageManager?.hasSystemFeature(PackageManager.FEATURE_BLUETOOTH_LE) == true),
             "hasPermissions" to (ctx != null && hasPermissions(ctx)),
             "hasBlePermissions" to (ctx != null && hasBlePermissions(ctx)),
+            "missing" to ArrayList(ctx?.let { missingBlePermissions(it) } ?: emptyList()),
             "locationOn" to (ctx != null && locationEnabled(ctx)),
             "multicastHeld" to (multicastLock?.isHeld == true),
             "skip" to lastSkip,

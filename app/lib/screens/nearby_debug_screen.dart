@@ -47,7 +47,7 @@ class _NearbyDebugScreenState extends State<NearbyDebugScreen> {
       setState(() => _status = 'Uploaded as $id');
     } catch (error) {
       if (!mounted) return;
-      setState(() => _status = 'Upload failed. Copy the log instead.');
+      setState(() => _status = 'Upload failed. Copy the log instead. ($error)');
     } finally {
       if (mounted) setState(() => _busy = false);
     }
