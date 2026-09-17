@@ -523,6 +523,7 @@ class DropService {
     if (_debugLog.length > 160) {
       _debugLog.removeRange(0, _debugLog.length - 160);
     }
+    DropDebugLog.toLogcat(line);
   }
 
   String _peersKey() {
@@ -581,6 +582,7 @@ class DropService {
 
     final totalBytes = files.fold<int>(0, (sum, file) => sum + file.info.size);
     var sentBytes = 0;
+    var lastLoggedBucket = 0;
     var lastEmit = DateTime.fromMillisecondsSinceEpoch(0);
 
     void emit(DropSendProgress progress, {bool force = false}) {
@@ -613,6 +615,9 @@ class DropService {
     cancel?.bind(client);
     var radio = peer.viaRadio;
     var target = peer;
+    _note(
+      'send start to=${peer.name} via=${radio ? 'ble' : 'wifi'} files=${files.length}',
+    );
     try {
       if (radio) {
         emit(
@@ -709,6 +714,22 @@ class DropService {
               sentBytes = files.take(i).fold<int>(0, (n, f) => n + f.info.size) +
                   fileSent;
               sendingLabel(i);
+              if (totalBytes > 0) {
+                final pct = (sentBytes * 100) ~/ totalBytes;
+                final bucket = pct < 25
+                    ? 0
+                    : pct < 50
+                        ? 25
+                        : pct < 75
+                            ? 50
+                            : pct < 100
+                                ? 75
+                                : 100;
+                if (bucket >= 25 && bucket <= 75 && bucket > lastLoggedBucket) {
+                  lastLoggedBucket = bucket;
+                  _note('send $bucket% to=${peer.name}');
+                }
+              }
               return chunk;
             }),
           ),
@@ -716,7 +737,7 @@ class DropService {
         );
         final done = await _awaitOrCancel(put.close(), cancel);
         if (done.statusCode != 200) {
-          throw StateError('Transfer failed on ${files[i].info.name}');
+          throw StateError('Transfer failed');
         }
         sentBytes = files.take(i + 1).fold<int>(0, (n, f) => n + f.info.size);
       }
@@ -729,12 +750,19 @@ class DropService {
         ),
         force: true,
       );
+      _note('send done to=${peer.name}');
     } on DropCancelled {
+      _note('send cancelled to=${peer.name}');
       rethrow;
     } on DropDeclined {
+      _note('send declined by=${peer.name}');
       rethrow;
     } catch (error) {
-      if (cancel?.isCancelled == true) throw DropCancelled();
+      if (cancel?.isCancelled == true) {
+        _note('send cancelled to=${peer.name}');
+        throw DropCancelled();
+      }
+      _note('send fail to=${peer.name} ${error.runtimeType}');
       rethrow;
     } finally {
       if (radio) await DropP2p.teardown();
@@ -794,6 +822,9 @@ class DropService {
       from: from,
       airGrab: airGrab,
     );
+    _note(
+      'recv offer from=$name files=${files.length}${airGrab ? ' airgrab' : ''}',
+    );
     final auto = DropPrefs.shouldAutoAccept(
       peerId: peerId,
       airGrab: airGrab,
@@ -806,6 +837,7 @@ class DropService {
           DropKnownPeer(id: peerId, name: name, lastAt: DateTime.now()),
         ),
       );
+      _note('recv auto-accept from=$name');
       return Response.ok(
         jsonEncode({'offerId': offer.id, 'accept': true}),
         headers: {'content-type': 'application/json'},
@@ -820,6 +852,7 @@ class DropService {
     );
     if (!accepted) {
       _offers.remove(offer.id);
+      _note('recv declined from=$name');
       return Response.ok(
         jsonEncode({'offerId': offer.id, 'accept': false}),
         headers: {'content-type': 'application/json'},
@@ -830,6 +863,7 @@ class DropService {
         DropKnownPeer(id: peerId, name: name, lastAt: DateTime.now()),
       ),
     );
+    _note('recv accepted from=$name');
     return Response.ok(
       jsonEncode({'offerId': offer.id, 'accept': true}),
       headers: {'content-type': 'application/json'},
@@ -850,6 +884,9 @@ class DropService {
     final total = dropOfferTotalBytes(offer.files);
     final prior = dropOfferPriorBytes(offer.files, index);
     var current = 0;
+    _note(
+      'recv file ${index + 1}/${offer.files.length} from=${offer.peerName}',
+    );
     _publishReceive(offer, prior, total, index, force: true);
     final tempDir = await getTemporaryDirectory();
     final temp = File(
@@ -880,6 +917,7 @@ class DropService {
           await out.close();
           sink = null;
           if (temp.existsSync()) temp.deleteSync();
+          _note('recv too large from=${offer.peerName}');
           return Response.badRequest(
             body: jsonEncode({'accept': false, 'error': 'too_large'}),
             headers: {'content-type': 'application/json'},
@@ -901,8 +939,9 @@ class DropService {
           temp.deleteSync();
         } catch (_) {}
       }
+      _note('recv cancelled from=${offer.peerName}');
       return Response(409, body: 'cancelled');
-    } catch (_) {
+    } catch (error) {
       try {
         await sink?.close();
       } catch (_) {}
@@ -911,6 +950,7 @@ class DropService {
           temp.deleteSync();
         } catch (_) {}
       }
+      _note('recv fail from=${offer.peerName} ${error.runtimeType}');
       rethrow;
     } finally {
       await _incomingFileSub?.cancel();
@@ -922,6 +962,7 @@ class DropService {
     final length = temp.existsSync() ? temp.lengthSync() : 0;
     if (length <= 0 || length > maxFile) {
       if (temp.existsSync()) temp.deleteSync();
+      _note('recv too large from=${offer.peerName}');
       return Response.badRequest(
         body: jsonEncode({'accept': false, 'error': 'too_large'}),
         headers: {'content-type': 'application/json'},
@@ -946,6 +987,7 @@ class DropService {
           airGrab: offer.airGrab,
         ),
       );
+      _note('recv done from=${offer.peerName}');
     } else {
       _publishReceive(
         offer,
