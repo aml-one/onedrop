@@ -183,4 +183,17 @@ class DropP2p {
       await _methods.invokeMethod<void>('teardown');
     } catch (_) {}
   }
+
+  /// Writes to Android `Log.i("OneDrop", …)` so Diagnostic Watch can see Dart
+  /// send/receive. `developer.log` lands on the `flutter` tag and Watch drops it.
+  static Future<void> logToLogcat(String message) async {
+    if (!supported) return;
+    final clipped = message.trim();
+    if (clipped.isEmpty) return;
+    try {
+      await _methods.invokeMethod<void>('log', {
+        'message': clipped.length > 400 ? clipped.substring(0, 400) : clipped,
+      });
+    } catch (_) {}
+  }
 }

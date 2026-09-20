@@ -62,6 +62,8 @@ object OneDropP2p {
     const val EVENTS = "one.aml.onedrop/p2p-peers"
     const val PERMISSION_REQUEST = 81
     private const val TAG = "OneDropP2p"
+    /** Diagnostic Watch filter. Dart send/recv notes also use this tag. */
+    private const val WATCH = "OneDrop"
     private const val DUTY_ADVERTISE_MS = 10_000L
     private const val DUTY_SCAN_MS = 1_500L
     private const val FRESH_SIGHTING_MS = 2_000L
@@ -135,6 +137,8 @@ object OneDropP2p {
         }
     }
     private var lastConnectNote = ""
+    private var lastAdvertiseLog = ""
+    private val lastPeerWatchAt = ConcurrentHashMap<String, Long>()
     private var lastGattStatus: Int? = null
     private var lastGattServerStatus: Int? = null
     private var activeGatt: BluetoothGatt? = null
@@ -182,6 +186,11 @@ object OneDropP2p {
                     result.success(true)
                 }
                 "debugStatus" -> result.success(debugStatus())
+                "log" -> {
+                    val msg = call.argument<String>("message").orEmpty().trim()
+                    if (msg.isNotEmpty()) Log.i(WATCH, msg.take(400))
+                    result.success(true)
+                }
                 else -> result.notImplemented()
             }
         }
@@ -204,6 +213,12 @@ object OneDropP2p {
                 }
             },
         )
+    }
+
+    private fun watch(line: String) {
+        val msg = line.trim()
+        if (msg.isEmpty()) return
+        Log.i(WATCH, msg.take(400))
     }
 
     fun neededPermissions(): Array<String> = blePermissions()
@@ -402,6 +417,8 @@ object OneDropP2p {
         running = true
         if (!hasBlePermissions(ctx)) {
             lastSkip = "missing_permissions"
+            val missing = missingBlePermissions(ctx).joinToString(",")
+            watch("start: BLE perms missing $missing")
             Log.i(TAG, "start: BLE perms missing")
             result.success(false)
             return
@@ -418,6 +435,7 @@ object OneDropP2p {
         }
         if (!hasBlePermissions(ctx)) {
             lastSkip = "missing_permissions"
+            watch("radio start failed missing_permissions")
             return
         }
         holdMulticast()
@@ -426,14 +444,17 @@ object OneDropP2p {
         lastSkip = ""
         val manager = ctx.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager ?: run {
             lastSkip = "no_bt_manager"
+            watch("radio start failed no_bt_manager")
             return
         }
         val adapter = manager.adapter ?: run {
             lastSkip = "no_adapter"
+            watch("radio start failed no_adapter")
             return
         }
         if (!adapter.isEnabled) {
             lastSkip = "bluetooth_off"
+            watch("radio start failed bluetooth_off")
             return
         }
         openGattServer(manager)
@@ -443,10 +464,18 @@ object OneDropP2p {
             return
         }
         lastSkip = ""
-        if (!locationEnabled(ctx)) {
+        val locOn = locationEnabled(ctx)
+        if (!locOn) {
             lastSkip = "location_off"
+            watch("Location is off — BLE scan is empty on most phones")
             Log.w(TAG, "Location is off — BLE scan is empty on most phones")
         }
+        watch(
+            "radio start sdk=${Build.VERSION.SDK_INT} " +
+                "model=${Build.MODEL} weak=${weakRadio()} " +
+                "bt=${adapter.isEnabled} loc=$locOn " +
+                "session=$dartSession advertiser=${adapter.bluetoothLeAdvertiser != null}",
+        )
         if (weakRadio()) {
             startDutyCycle(adapter)
         } else {
@@ -454,6 +483,10 @@ object OneDropP2p {
             startAdvertise(adapter)
             startScan(adapter)
         }
+        watch(
+            "radio skip=${lastSkip.ifEmpty { "ok" }} " +
+                "advertise=$advertiseStarted scan=$scanStarted duty=$dutyRunning",
+        )
     }
 
     private fun debugStatus(): HashMap<String, Any?> {
@@ -618,6 +651,9 @@ object OneDropP2p {
         stopDutyCycle()
         dutyRunning = true
         dutyAdvertisePhase = true
+        watch(
+            "duty cycle on advertise=${DUTY_ADVERTISE_MS}ms scan=${DUTY_SCAN_MS}ms",
+        )
         applyDutyPhase(adapter)
     }
 
@@ -744,7 +780,13 @@ object OneDropP2p {
         if (dartSession && payload.size > 3) {
             payload[3] = (payload[3].toInt() or SESSION_FLAG).toByte()
         }
-        Log.i(TAG, "advertise connectable=$connectable session=$dartSession bytes=${payload.size}")
+        val advertiseNote =
+            "advertise connectable=$connectable session=$dartSession bytes=${payload.size}"
+        if (advertiseNote != lastAdvertiseLog) {
+            lastAdvertiseLog = advertiseNote
+            watch(advertiseNote)
+            Log.i(TAG, advertiseNote)
+        }
         val data = AdvertiseData.Builder()
             .setIncludeDeviceName(false)
             .addManufacturerData(COMPANY, payload)
@@ -816,6 +858,7 @@ object OneDropP2p {
             scanner?.startScan(filters, settings, scanCallback)
             scanStarted = true
             scanAppliedHard = scanHard
+            watch("scan start hard=$scanHard")
         } catch (error: Exception) {
             Log.w(TAG, "scan", error)
         }
@@ -910,6 +953,7 @@ object OneDropP2p {
     private fun waitForPeerThenConnect(id: String, device: BluetoothDevice, gen: Int) {
         waitingConnectId = id
         lastConnectNote = "waiting for $id"
+        watch(lastConnectNote)
         Log.i(TAG, lastConnectNote)
         stopDutyCycle()
         stopAdvertiseQuiet()
@@ -988,6 +1032,7 @@ object OneDropP2p {
             BluetoothDevice.TRANSPORT_LE
         }
         lastConnectNote = "gatt try=$attempt auto=$autoConnect transport=$transport"
+        watch(lastConnectNote)
         Log.i(TAG, lastConnectNote)
         try {
             activeGatt?.disconnect()
@@ -1026,7 +1071,8 @@ object OneDropP2p {
                 if (!gattLinked && connectAttempt == attempt && attempt < 2) {
                     lastConnectNote =
                         "hung gatt=${lastGattStatus ?: "none"} try=$attempt — retry"
-                    Log.w(TAG, lastConnectNote)
+                    watch(lastConnectNote)
+            Log.w(TAG, lastConnectNote)
                     openGatt(device, attempt + 1)
                 }
             }, 8_000)
@@ -1039,6 +1085,7 @@ object OneDropP2p {
     private fun retryGattOrFail(gatt: BluetoothGatt, status: Int) {
         lastGattStatus = status
         lastConnectNote = "gatt dropped status=$status try=$connectAttempt"
+        watch(lastConnectNote)
         Log.w(TAG, lastConnectNote)
         if (gattLinked) {
             failConnect("Bluetooth dropped")
@@ -1203,7 +1250,8 @@ object OneDropP2p {
 
                     override fun onFailed(reason: Int) {
                         lastConnectNote = "hotspot failed reason=$reason — swap"
-                        Log.w(TAG, lastConnectNote)
+                        watch(lastConnectNote)
+            Log.w(TAG, lastConnectNote)
                         offerSwap(device)
                     }
                 },
@@ -1548,6 +1596,17 @@ object OneDropP2p {
         val name = record.getManufacturerSpecificData(COMPANY_NAME)
             ?: record.deviceName?.toByteArray(Charsets.UTF_8)
         val sighting = parseBeacon(beacon, name) ?: return
+        val now = System.currentTimeMillis()
+        val lastAt = lastPeerWatchAt[sighting.id] ?: 0L
+        if (now - lastAt >= 5_000L) {
+            lastPeerWatchAt[sighting.id] = now
+            val session =
+                beacon != null && beacon.size > 3 && (beacon[3].toInt() and SESSION_FLAG) != 0
+            watch(
+                "ble peer ${sighting.name} rssi=${result.rssi} " +
+                    "os=${sighting.os} session=$session",
+            )
+        }
         if (beacon != null && beacon.size > 3 && (beacon[3].toInt() and SESSION_FLAG) != 0) {
             main.post { noteSenderSession() }
         }
@@ -1590,6 +1649,7 @@ object OneDropP2p {
         override fun onServiceAdded(status: Int, service: BluetoothGattService) {
             lastGattServerStatus = status
             lastConnectNote = "gatt service added status=$status"
+            watch(lastConnectNote)
             Log.i(TAG, lastConnectNote)
             if (status != BluetoothGatt.GATT_SUCCESS && !gattServiceRetry) {
                 gattServiceRetry = true
@@ -1605,6 +1665,7 @@ object OneDropP2p {
         override fun onConnectionStateChange(device: BluetoothDevice, status: Int, newState: Int) {
             lastGattServerStatus = status
             lastConnectNote = "gatt server state=$newState status=$status"
+            watch(lastConnectNote)
             Log.i(TAG, lastConnectNote)
             if (newState == BluetoothProfile.STATE_CONNECTED) {
                 // Incoming GATT needs the scanner off on cheap radios.
@@ -1720,6 +1781,7 @@ object OneDropP2p {
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
             lastGattStatus = status
             lastConnectNote = "gatt state=$newState status=$status try=$connectAttempt"
+            watch(lastConnectNote)
             Log.i(TAG, lastConnectNote)
             if (newState == BluetoothProfile.STATE_CONNECTED) {
                 gattLinked = true
@@ -1866,7 +1928,8 @@ object OneDropP2p {
                     if (gen != connectGen || pendingConnect == null) return@post
                     if (ok && !joinStarted && !swapStarted) {
                         lastConnectNote = "same LAN $lan — skip hotspot"
-                        Log.i(TAG, lastConnectNote)
+                        watch(lastConnectNote)
+            Log.i(TAG, lastConnectNote)
                         succeedConnect(lan, port)
                     } else {
                         subscribeAndAskHost(gatt)
@@ -1912,6 +1975,7 @@ object OneDropP2p {
         main.postDelayed({
             if (gen != connectGen || pendingConnect == null || hostWritten) return@postDelayed
             lastConnectNote = "cccd silent — write host anyway"
+            watch(lastConnectNote)
             Log.w(TAG, lastConnectNote)
             writeHostCommand(gatt)
         }, if (wrote) 1_600 else 200)

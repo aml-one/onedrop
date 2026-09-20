@@ -1,4 +1,7 @@
+import 'dart:async';
 import 'dart:developer' as developer;
+
+import 'package:drop_p2p/drop_p2p.dart';
 
 /// Structured Nearby debug events. No file contents, paths, or payload bytes.
 class DropDebugLog {
@@ -16,10 +19,11 @@ class DropDebugLog {
     onSignificant = null;
   }
 
-  /// USB Watch (AmL Diagnostic) reads this tag from logcat. Keep notes short.
+  /// USB Watch (AmL Diagnostic) reads Android tag `OneDrop`. Keep notes short.
   static void toLogcat(String message) {
     if (message.isEmpty) return;
     developer.log(message, name: 'OneDrop');
+    unawaited(DropP2p.logToLogcat(message));
   }
 
   static void event(String kind, [String? detail]) {
