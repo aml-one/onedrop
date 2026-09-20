@@ -30,8 +30,10 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
+import android.net.wifi.WifiConfiguration
 import android.net.wifi.WifiManager
 import android.net.wifi.WifiNetworkSpecifier
+import android.net.wifi.WifiNetworkSuggestion
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -112,6 +114,15 @@ object OneDropP2p {
     private var hotspot: WifiManager.LocalOnlyHotspotReservation? = null
     private var joinCallback: ConnectivityManager.NetworkCallback? = null
     private var boundNetwork: Network? = null
+    private var joinTargetSsid = ""
+    private var joinTargetPsk = ""
+    private var joinTargetIp = ""
+    private var joinTargetPort = 0
+    private var joinReadyTo: BluetoothDevice? = null
+    private var joinUntil = 0L
+    private var joinFinished = false
+    private var amazonLegacyTried = false
+    private val joinPoll = Runnable { pollJoinedAp() }
 
     private val devices = ConcurrentHashMap<String, BluetoothDevice>()
     private val deviceSeenAt = ConcurrentHashMap<String, Long>()
@@ -218,7 +229,7 @@ object OneDropP2p {
     private fun watch(line: String) {
         val msg = line.trim()
         if (msg.isEmpty()) return
-        Log.i(WATCH, msg.take(400))
+        Log.i(WATCH, msg.take(500))
     }
 
     fun neededPermissions(): Array<String> = blePermissions()
@@ -932,6 +943,11 @@ object OneDropP2p {
         boundForHotspot = false
         joinStarted = false
         swapStarted = false
+        joinFinished = false
+        amazonLegacyTried = false
+        joinTargetSsid = ""
+        joinReadyTo = null
+        main.removeCallbacks(joinPoll)
         lastGattStatus = null
         val gen = ++connectGen
         main.postDelayed({
@@ -939,7 +955,7 @@ object OneDropP2p {
                 lastConnectNote = "timeout gatt=${lastGattStatus ?: "none"} try=$connectAttempt"
                 failConnect("Could not reach them nearby")
             }
-        }, 55_000)
+        }, if (amazonRadio()) 80_000 else 70_000)
         val age = System.currentTimeMillis() - (deviceSeenAt[id] ?: 0L)
         if (age in 0 until FRESH_SIGHTING_MS) {
             lastConnectNote = "fresh sighting ${age}ms — connecting ${device.address}"
@@ -978,6 +994,7 @@ object OneDropP2p {
         waitingConnectId = null
         connectDevice = device
         lastConnectNote = "connecting ${device.address}"
+        watch(lastConnectNote)
         // Scan/advertise/GATT-server while connectGatt is the classic
         // Android hang — Fire OS, ColorOS, and HyperOS never fire a callback.
         pauseForConnect()
@@ -990,6 +1007,7 @@ object OneDropP2p {
     @SuppressLint("MissingPermission")
     private fun pauseForConnect() {
         radioPausedForConnect = true
+        watch("radio pause for GATT connect")
         stopDutyCycle()
         stopScanQuiet()
         stopAdvertiseQuiet()
@@ -1013,6 +1031,7 @@ object OneDropP2p {
         }
         if (!running || radioHeldForCamera) return
         val adapter = bluetoothAdapter() ?: return
+        watch("radio resume after GATT")
         if (weakRadio()) {
             startDutyCycle(adapter)
         } else {
@@ -1116,6 +1135,8 @@ object OneDropP2p {
         hostWritten = false
         infoRead = false
         main.removeCallbacks(offerPoll)
+        main.removeCallbacks(joinPoll)
+        watch("link fail $message last=$lastConnectNote")
         try {
             activeGatt?.close()
         } catch (_: Exception) {
@@ -1142,7 +1163,9 @@ object OneDropP2p {
         hostWritten = false
         infoRead = false
         main.removeCallbacks(offerPoll)
+        main.removeCallbacks(joinPoll)
         lastConnectNote = "linked $host:$port"
+        watch(lastConnectNote)
         if (!boundForHotspot) {
             try {
                 activeGatt?.close()
@@ -1198,6 +1221,10 @@ object OneDropP2p {
     }
 
     private fun releaseJoin() {
+        main.removeCallbacks(joinPoll)
+        joinFinished = false
+        joinTargetSsid = ""
+        joinReadyTo = null
         val ctx = app
         val cm = ctx?.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
         try {
@@ -1231,20 +1258,24 @@ object OneDropP2p {
     private fun handleHostRequest(device: BluetoothDevice) {
         if (cannotHostHotspot()) {
             lastConnectNote = "this device cannot host a private AP — asking peer"
+            watch(lastConnectNote)
             offerSwap(device)
             return
         }
         val ctx = app ?: return
         val wifi = ctx.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
         if (hotspot != null) {
+            watch("hotspot already up — notify peer")
             notifyAp(device)
             return
         }
+        watch("hotspot starting")
         try {
             wifi.startLocalOnlyHotspot(
                 object : WifiManager.LocalOnlyHotspotCallback() {
                     override fun onStarted(reservation: WifiManager.LocalOnlyHotspotReservation) {
                         hotspot = reservation
+                        watch("hotspot started ssidLen=${hotspotSsidLen(reservation)}")
                         main.postDelayed({ notifyAp(device) }, 400)
                     }
 
@@ -1258,12 +1289,27 @@ object OneDropP2p {
                 main,
             )
         } catch (error: Exception) {
+            watch("hotspot threw ${error.javaClass.simpleName}")
             Log.w(TAG, "hotspot", error)
             offerSwap(device)
         }
     }
 
+    private fun hotspotSsidLen(reservation: WifiManager.LocalOnlyHotspotReservation): Int {
+        return try {
+            if (Build.VERSION.SDK_INT >= 30) {
+                reservation.softApConfiguration.ssid?.trim('"')?.length ?: 0
+            } else {
+                @Suppress("DEPRECATION")
+                reservation.wifiConfiguration?.SSID?.trim('"')?.length ?: 0
+            }
+        } catch (_: Exception) {
+            0
+        }
+    }
+
     private fun offerSwap(device: BluetoothDevice) {
+        watch("offer swap — ask peer to host AP")
         val json = JSONObject().put("t", "swap")
         linkOffer = json
         notifyLink(device, json)
@@ -1429,6 +1475,8 @@ object OneDropP2p {
         }
     }
 
+    private fun joinWaitMs(): Long = if (amazonRadio()) 45_000 else 25_000
+
     private fun joinAp(
         ssid: String,
         psk: String,
@@ -1438,12 +1486,28 @@ object OneDropP2p {
     ) {
         val ctx = app ?: return failConnect("Gallery is not open")
         if (ssid.isEmpty() || psk.isEmpty()) {
-            failConnect("The other device could not open Wi-Fi")
+            watch("join AP missing ssid=${ssid.isNotEmpty()} psk=${psk.isNotEmpty()}")
+            failJoin("The other device could not open Wi-Fi")
             return
         }
         if (Build.VERSION.SDK_INT < 29) {
-            failConnect("Nearby Wi-Fi needs Android 10+")
+            watch("join AP blocked sdk=${Build.VERSION.SDK_INT}")
+            failJoin("Nearby Wi-Fi needs Android 10+")
             return
+        }
+        joinTargetSsid = ssid
+        joinTargetPsk = psk
+        joinTargetIp = ip
+        joinTargetPort = port
+        joinReadyTo = readyTo
+        joinFinished = false
+        amazonLegacyTried = false
+        joinUntil = System.currentTimeMillis() + joinWaitMs()
+        val waitMs = joinWaitMs()
+        watch("join AP ssidLen=${ssid.length} wait=${waitMs}ms amazon=${amazonRadio()}")
+        if (amazonRadio()) {
+            watch("wifi join: Fire may show a Connect prompt — keep One Drop open")
+            suggestAmazonWifi(ctx, ssid, psk)
         }
         val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
         val specifier = WifiNetworkSpecifier.Builder()
@@ -1457,42 +1521,175 @@ object OneDropP2p {
             .build()
         val callback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
-                boundNetwork = network
-                boundForHotspot = true
-                try {
-                    cm.bindProcessToNetwork(network)
-                } catch (_: Exception) {
-                }
-                main.post {
-                    if (readyTo != null) {
-                        val mine = ipv4On(network).ifBlank { ip }
-                        val json = JSONObject()
-                            .put("t", "ready")
-                            .put("ip", mine)
-                            .put("port", httpPort)
-                        linkOffer = json
-                        notifyLink(readyTo, json)
-                        return@post
-                    }
-                    succeedConnect(ip, port)
-                }
+                watch("wifi join available")
+                finishJoin(network)
             }
 
             override fun onUnavailable() {
-                main.post {
-                    if (pendingConnect != null) {
-                        failConnect("Could not join the private Wi-Fi")
-                    }
-                }
+                // Fire OS pops NetworkRequestDialogActivity then reports
+                // unavailable / NetReassign[no changes] without binding.
+                // Keep polling WifiInfo — the user may still tap Connect.
+                watch("wifi join unavailable amazon=${amazonRadio()}")
+                if (amazonRadio()) return
+                main.post { failJoin("Could not join the private Wi-Fi") }
             }
         }
         joinCallback = callback
-        val waitMs = if (amazonRadio()) 35_000 else 25_000
         try {
-            cm.requestNetwork(request, callback, waitMs)
+            if (amazonRadio()) {
+                cm.requestNetwork(request, callback)
+            } else {
+                cm.requestNetwork(request, callback, waitMs.toInt())
+            }
         } catch (error: Exception) {
-            failConnect(error.message ?: "Wi-Fi join failed")
+            failJoin(error.message ?: "Wi-Fi join failed")
+            return
         }
+        main.removeCallbacks(joinPoll)
+        main.postDelayed(joinPoll, 400)
+    }
+
+    private fun pollJoinedAp() {
+        if (joinFinished || joinTargetSsid.isEmpty()) return
+        if (System.currentTimeMillis() > joinUntil) {
+            watch("wifi join timeout")
+            failJoin("Could not join the private Wi-Fi")
+            return
+        }
+        val ctx = app ?: return
+        val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            ?: return
+        val matched = wifiNetworkForSsid(cm, joinTargetSsid)
+        if (matched != null) {
+            watch("wifi join poll matched")
+            finishJoin(matched)
+            return
+        }
+        val startedAgo = joinWaitMs() - (joinUntil - System.currentTimeMillis())
+        if (amazonRadio() && !amazonLegacyTried && startedAgo >= 5_000) {
+            nudgeAmazonWifi(joinTargetSsid, joinTargetPsk)
+        }
+        main.postDelayed(joinPoll, 500)
+    }
+
+    private fun finishJoin(network: Network) {
+        if (joinFinished) return
+        joinFinished = true
+        main.removeCallbacks(joinPoll)
+        val ctx = app ?: return
+        val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        boundNetwork = network
+        boundForHotspot = true
+        try {
+            cm.bindProcessToNetwork(network)
+        } catch (_: Exception) {
+        }
+        val readyTo = joinReadyTo
+        val ip = joinTargetIp
+        val port = joinTargetPort
+        watch("wifi join bound")
+        main.post {
+            if (readyTo != null) {
+                val mine = ipv4On(network).ifBlank { ip }
+                watch("wifi join ready ipLen=${mine.length}")
+                val json = JSONObject()
+                    .put("t", "ready")
+                    .put("ip", mine)
+                    .put("port", httpPort)
+                linkOffer = json
+                notifyLink(readyTo, json)
+                return@post
+            }
+            succeedConnect(ip, port)
+        }
+    }
+
+    private fun failJoin(message: String) {
+        main.removeCallbacks(joinPoll)
+        val readyTo = joinReadyTo
+        if (readyTo != null && pendingConnect == null) {
+            watch("wifi join fail as peer $message")
+            notifyLink(
+                readyTo,
+                JSONObject().put("t", "err").put("m", "wifi"),
+            )
+            return
+        }
+        failConnect(message)
+    }
+
+    @Suppress("DEPRECATION")
+    private fun currentWifiSsid(): String {
+        val ctx = app ?: return ""
+        val wifi = ctx.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+            ?: return ""
+        return try {
+            wifi.connectionInfo?.ssid.orEmpty().trim('"').replace("<unknown ssid>", "", true)
+        } catch (_: Exception) {
+            ""
+        }
+    }
+
+    private fun wifiNetworkForSsid(cm: ConnectivityManager, ssid: String): Network? {
+        if (ssid.isEmpty()) return null
+        val current = currentWifiSsid()
+        if (!ssid.equals(current, ignoreCase = true)) return null
+        for (network in cm.allNetworks) {
+            val caps = cm.getNetworkCapabilities(network) ?: continue
+            if (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) return network
+        }
+        return null
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun suggestAmazonWifi(ctx: Context, ssid: String, psk: String) {
+        if (Build.VERSION.SDK_INT < 29) return
+        try {
+            val suggestion = WifiNetworkSuggestion.Builder()
+                .setSsid(ssid)
+                .setWpa2Passphrase(psk)
+                .setIsAppInteractionRequired(false)
+                .build()
+            val wifi = ctx.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+            val code = wifi.addNetworkSuggestions(listOf(suggestion))
+            watch("wifi join suggestion status=$code")
+        } catch (error: Exception) {
+            watch("wifi join suggestion ${error.javaClass.simpleName}")
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    @SuppressLint("MissingPermission")
+    private fun nudgeAmazonWifi(ssid: String, psk: String) {
+        if (amazonLegacyTried) return
+        amazonLegacyTried = true
+        val ctx = app ?: return
+        watch("wifi join nudge Fire addNetwork")
+        try {
+            val wifi = ctx.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+            val conf = WifiConfiguration()
+            conf.SSID = "\"$ssid\""
+            conf.preSharedKey = "\"$psk\""
+            conf.allowedKeyManagement.set(WifiConfiguration.KeyMgmt.WPA_PSK)
+            val netId = wifi.addNetwork(conf)
+            if (netId >= 0) {
+                wifi.enableNetwork(netId, true)
+                wifi.reconnect()
+                watch("wifi join nudge netId=$netId")
+            } else {
+                watch("wifi join nudge addNetwork failed")
+            }
+        } catch (error: Exception) {
+            watch("wifi join nudge ${error.javaClass.simpleName}")
+        }
+    }
+
+    private fun privateIpv4(ip: String): Boolean {
+        val parts = ip.split('.')
+        if (parts.size != 4) return false
+        val a = parts[0].toIntOrNull() ?: return false
+        val b = parts[1].toIntOrNull() ?: return false
+        return a == 10 || (a == 192 && b == 168) || (a == 172 && b in 16..31)
     }
 
     private fun emitPeer(
@@ -1586,6 +1783,7 @@ object OneDropP2p {
                 return
             }
             lastSkip = "advertise_failed_$errorCode"
+            watch("advertise failed $errorCode")
             Log.w(TAG, "advertise failed $errorCode")
         }
     }
@@ -1598,13 +1796,13 @@ object OneDropP2p {
         val sighting = parseBeacon(beacon, name) ?: return
         val now = System.currentTimeMillis()
         val lastAt = lastPeerWatchAt[sighting.id] ?: 0L
-        if (now - lastAt >= 5_000L) {
+        if (lastAt == 0L || now - lastAt >= 1_000L) {
             lastPeerWatchAt[sighting.id] = now
             val session =
                 beacon != null && beacon.size > 3 && (beacon[3].toInt() and SESSION_FLAG) != 0
             watch(
                 "ble peer ${sighting.name} rssi=${result.rssi} " +
-                    "os=${sighting.os} session=$session",
+                    "os=${sighting.os} session=$session addr=${result.device.address}",
             )
         }
         if (beacon != null && beacon.size > 3 && (beacon[3].toInt() and SESSION_FLAG) != 0) {
@@ -1641,6 +1839,7 @@ object OneDropP2p {
             lastSkip = "scan_failed_$errorCode"
             scanStarted = false
             scanAppliedHard = false
+            watch("scan failed $errorCode")
             Log.w(TAG, "scan failed $errorCode")
         }
     }
@@ -1691,9 +1890,11 @@ object OneDropP2p {
             characteristic: BluetoothGattCharacteristic,
         ) {
             if (characteristic.uuid != INFO_UUID) {
+                watch("gatt read ignored uuid")
                 gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_FAILURE, 0, null)
                 return
             }
+            watch("gatt info read offset=$offset")
             val payload = JSONObject()
                 .put("v", 1)
                 .put("peerId", peerId)
@@ -1722,6 +1923,7 @@ object OneDropP2p {
             if (characteristic.uuid != LINK_UUID || value == null) return
             val text = String(value, Charsets.UTF_8)
             val type = runCatching { JSONObject(text).optString("t") }.getOrDefault("")
+            watch("gatt write in t=$type bytes=${value.size}")
             when (type) {
                 "host" -> main.post { handleHostRequest(device) }
                 "ap" -> main.post {
@@ -1814,6 +2016,7 @@ object OneDropP2p {
 
         override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
             lastConnectNote = "mtu=$mtu status=$status"
+            watch(lastConnectNote)
         }
 
         @SuppressLint("MissingPermission")
@@ -1821,9 +2024,11 @@ object OneDropP2p {
             lastGattStatus = status
             if (status != BluetoothGatt.GATT_SUCCESS) {
                 lastConnectNote = "discover_failed_$status"
+                watch(lastConnectNote)
                 main.post { failConnect("That device is not ready for One Drop") }
                 return
             }
+            watch("gatt services discovered")
             readPeerInfo(gatt)
             val gen = connectGen
             main.postDelayed({
@@ -1842,7 +2047,10 @@ object OneDropP2p {
             status: Int,
         ) {
             if (status == BluetoothGatt.GATT_SUCCESS) {
+                watch("gatt info read ${value.size}b")
                 handleInfoBytes(gatt, value)
+            } else {
+                watch("gatt info read failed status=$status")
             }
         }
 
@@ -1865,6 +2073,7 @@ object OneDropP2p {
             status: Int,
         ) {
             lastConnectNote = "cccd status=$status"
+            watch(lastConnectNote)
             writeHostCommand(gatt)
         }
 
@@ -1914,24 +2123,26 @@ object OneDropP2p {
         val lan = json.optString("lan").trim()
         val port = json.optInt("port", httpPort)
         val mine = lanIpv4()
+        val sameLan = sameLan24(mine, lan)
         if (!joinStarted &&
             !swapStarted &&
-            lan.isNotEmpty() &&
-            sameLan24(mine, lan) &&
+            privateIpv4(lan) &&
             port > 0
         ) {
-            lastConnectNote = "probing LAN $lan:$port"
+            lastConnectNote = "probing LAN $lan:$port same=$sameLan"
+            watch(lastConnectNote)
             val gen = connectGen
             Thread {
                 val ok = lanReachable(lan, port)
                 main.post {
                     if (gen != connectGen || pendingConnect == null) return@post
                     if (ok && !joinStarted && !swapStarted) {
-                        lastConnectNote = "same LAN $lan — skip hotspot"
+                        lastConnectNote = "same Wi-Fi $lan — skip hotspot"
                         watch(lastConnectNote)
-            Log.i(TAG, lastConnectNote)
+                        Log.i(TAG, lastConnectNote)
                         succeedConnect(lan, port)
                     } else {
+                        watch("LAN probe failed — hotspot next")
                         subscribeAndAskHost(gatt)
                     }
                 }
@@ -1946,9 +2157,11 @@ object OneDropP2p {
         if (hostWritten || pendingConnect == null) return
         val link = gatt.getService(SERVICE_UUID)?.getCharacteristic(LINK_UUID)
         if (link == null) {
+            watch("subscribe failed — no LINK char")
             failConnect("That device is not ready for One Drop")
             return
         }
+        watch("subscribe link notify")
         try {
             gatt.setCharacteristicNotification(link, true)
         } catch (_: Exception) {
@@ -1988,6 +2201,7 @@ object OneDropP2p {
         val link = gatt.getService(SERVICE_UUID)?.getCharacteristic(LINK_UUID) ?: return
         hostWritten = true
         lastConnectNote = "write host"
+        watch(lastConnectNote)
         writeLinkJson(gatt, link, JSONObject().put("t", "host"))
         main.removeCallbacks(offerPoll)
         main.post(offerPoll)
@@ -2035,7 +2249,9 @@ object OneDropP2p {
     }
 
     private fun applyLinkOffer(json: JSONObject) {
-        when (json.optString("t")) {
+        val type = json.optString("t")
+        watch("link offer t=$type")
+        when (type) {
             "ap" -> main.post {
                 if (joinStarted) return@post
                 joinStarted = true
@@ -2066,31 +2282,37 @@ object OneDropP2p {
     @SuppressLint("MissingPermission")
     private fun hostApForPeer() {
         if (cannotHostHotspot()) {
+            watch("swap host blocked — neither can open AP")
             failConnect("Neither device can open the private Wi-Fi")
             return
         }
         val ctx = app ?: return failConnect("Gallery is not open")
         if (hotspot != null) {
+            watch("swap host — hotspot already up")
             writeApToPeer()
             return
         }
+        watch("swap host — starting hotspot")
         val wifi = ctx.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
         try {
             wifi.startLocalOnlyHotspot(
                 object : WifiManager.LocalOnlyHotspotCallback() {
                     override fun onStarted(reservation: WifiManager.LocalOnlyHotspotReservation) {
                         hotspot = reservation
+                        watch("swap hotspot started ssidLen=${hotspotSsidLen(reservation)}")
                         main.postDelayed({ writeApToPeer() }, 400)
                     }
 
                     override fun onFailed(reason: Int) {
                         lastConnectNote = "sender hotspot failed $reason"
+                        watch(lastConnectNote)
                         failConnect("Could not open the private Wi-Fi")
                     }
                 },
                 main,
             )
         } catch (error: Exception) {
+            watch("swap hotspot threw ${error.javaClass.simpleName}")
             Log.w(TAG, "sender hotspot", error)
             failConnect("Could not open the private Wi-Fi")
         }
@@ -2103,6 +2325,7 @@ object OneDropP2p {
         val json = apJson() ?: return failConnect("Could not open the private Wi-Fi")
         linkOffer = json
         lastConnectNote = "wrote ap to peer"
+        watch(lastConnectNote)
         writeLinkJson(gatt, link, json)
         main.removeCallbacks(offerPoll)
         main.post(offerPoll)

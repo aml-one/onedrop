@@ -183,6 +183,11 @@ DropSendErrorCopy dropSendErrorCopy(String raw) {
     message = 'They’re not on this Wi‑Fi anymore';
   } else if (hay.contains('no response from peer')) {
     message = 'They didn’t answer';
+  } else if (hay.contains('could not join the private wi-fi') ||
+      hay.contains('could not open a private wi-fi') ||
+      hay.contains('could not open the private wi-fi') ||
+      hay.contains('neither device can open')) {
+    message = 'Couldn’t join the private Wi-Fi. If a Connect prompt appears, tap it and keep One Drop open.';
   } else if (hay.contains('could not send this file') ||
       hay.contains('bad_offer')) {
     message = 'This file couldn’t be sent';

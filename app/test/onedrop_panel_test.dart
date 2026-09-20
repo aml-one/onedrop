@@ -314,6 +314,10 @@ void main() {
       dropSendErrorCopy('File too large for One Drop (max 7 GB)').detail,
       isNull,
     );
+    expect(
+      dropSendErrorCopy('Could not join the private Wi-Fi').message,
+      contains('Connect prompt'),
+    );
   });
 
   testWidgets('failed send shows a friendly reason above Close', (tester) async {

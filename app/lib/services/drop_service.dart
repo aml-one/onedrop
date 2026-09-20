@@ -632,6 +632,7 @@ class DropService {
         final DropP2pLink link;
         try {
           link = await _awaitOrCancel(DropP2p.connect(peer.id), cancel);
+          _note('ble linked ${link.host}:${link.port}');
         } catch (error) {
           _note('ble link $error');
           DropDebugLog.event('connect', '$error');
@@ -682,6 +683,7 @@ class DropService {
           }),
         ),
       );
+      _note('http offer $origin files=${files.length}');
       final offered = await _awaitOrCancel(offer.close(), cancel);
       if (cancel?.isCancelled == true) throw DropCancelled();
       final body = _decodeOfferResponse(
@@ -695,6 +697,7 @@ class DropService {
         throw DropDeclined();
       }
       final offerId = body['offerId'] as String;
+      _note('offer accepted idLen=${offerId.length}');
       for (var i = 0; i < files.length; i++) {
         if (cancel?.isCancelled == true) throw DropCancelled();
         sendingLabel(i, force: true);
@@ -762,7 +765,7 @@ class DropService {
         _note('send cancelled to=${peer.name}');
         throw DropCancelled();
       }
-      _note('send fail to=${peer.name} ${error.runtimeType}');
+      _note('send fail to=${peer.name} ${error.runtimeType} $error');
       rethrow;
     } finally {
       if (radio) await DropP2p.teardown();
