@@ -83,6 +83,20 @@ void main() {
     expect(decodeDropP2pBeacon(gallery)?.files, isFalse);
   });
 
+  test('session flag bit 6 does not change peer id or files decode', () {
+    final bytes = encodeDropP2pBeacon(
+      peerId: 'liv',
+      port: 4071,
+      role: 'phone',
+      os: 'android',
+      files: true,
+    );
+    bytes[3] = bytes[3] | dropP2pSessionFlag;
+    final decoded = decodeDropP2pBeacon(bytes);
+    expect(decoded?.peerId, 'liv');
+    expect(decoded?.files, isTrue);
+  });
+
   test('wrong magic is ignored', () {
     final bytes = encodeDropP2pBeacon(
       peerId: 'x',

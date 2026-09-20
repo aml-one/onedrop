@@ -19,6 +19,11 @@ const dropRadioPeerTtl = Duration(seconds: 30);
 /// Flag bit 5: this peer is OneDrop and accepts files, not Gallery photos-only.
 const dropP2pFilesFlag = 0x20;
 
+/// Flag bit 6: send UI is open (Kotlin ORs this onto the advertised copy).
+/// Listeners go connectable only while they see it, so idle beacons stay
+/// off Windows "Add a device".
+const dropP2pSessionFlag = 0x40;
+
 class DropP2pBeacon {
   const DropP2pBeacon({
     required this.peerId,

@@ -165,6 +165,53 @@ std::string HotspotIp() {
   return "192.168.173.1";
 }
 
+bool PrivateApIp(const std::string& ip) {
+  return ip.rfind("192.168.173.", 0) == 0 ||
+         ip.rfind("192.168.137.", 0) == 0 ||
+         ip.rfind("192.168.49.", 0) == 0 ||
+         ip.rfind("192.168.43.", 0) == 0;
+}
+
+std::string LanIpv4() {
+  try {
+    for (auto const& name : wnc::NetworkInformation::GetHostNames()) {
+      if (name.Type() != wnet::HostNameType::Ipv4) continue;
+      const auto ip = Narrow(std::wstring(name.CanonicalName()));
+      if (ip.rfind("127.", 0) == 0 || ip.rfind("169.254.", 0) == 0) continue;
+      if (PrivateApIp(ip)) continue;
+      if (ip.rfind("192.168.", 0) == 0 || ip.rfind("10.", 0) == 0 ||
+          ip.rfind("172.", 0) == 0) {
+        return ip;
+      }
+    }
+  } catch (...) {
+  }
+  return {};
+}
+
+bool SameLan24(const std::string& a, const std::string& b) {
+  if (a.empty() || b.empty()) return false;
+  const auto slash = [](const std::string& ip) {
+    auto p1 = ip.find('.');
+    auto p2 = ip.find('.', p1 == std::string::npos ? 0 : p1 + 1);
+    auto p3 = ip.find('.', p2 == std::string::npos ? 0 : p2 + 1);
+    if (p3 == std::string::npos) return std::string();
+    return ip.substr(0, p3);
+  };
+  const auto left = slash(a);
+  return !left.empty() && left == slash(b);
+}
+
+std::string PadLinkJson(std::string json) {
+  if (json.size() == 22 || json.size() < 24) {
+    if (!json.empty() && json.back() == '}') {
+      json.pop_back();
+      json += ",\"z\":1}";
+    }
+  }
+  return json;
+}
+
 struct PostedWork {
   std::function<void()> fn;
 };
@@ -527,7 +574,12 @@ class DropP2pPlugin {
                     std::ostringstream json;
                     json << "{\"v\":1,\"peerId\":\"" << peer_id_
                          << "\",\"name\":\"" << name_ << "\",\"port\":"
-                         << http_port_ << "}";
+                         << http_port_ << ",\"lan\":\"" << LanIpv4()
+                         << "\",\"canHost\":true";
+                    if (!last_offer_.empty()) {
+                      json << ",\"offer\":" << last_offer_;
+                    }
+                    json << "}";
                     request.RespondWithValue(BytesToBuffer(json.str()));
                   }
                   deferral.Complete();
@@ -568,8 +620,11 @@ class DropP2pPlugin {
     const auto type = JsonGet(json, "t");
     if (type == "host") {
       StartAp();
+    } else if (type == "ap") {
+      JoinApAsReceiver(JsonGet(json, "ssid"), JsonGet(json, "psk"));
     } else if (type == "done") {
       StopAp();
+      WlanLeave();
     }
   }
 
@@ -601,7 +656,7 @@ class DropP2pPlugin {
       }
       NotifyAp();
     } catch (...) {
-      NotifyLink("{\"t\":\"err\",\"m\":\"wifi\"}");
+      NotifyLink("{\"t\":\"err\",\"m\":\"wifi\",\"z\":1}");
     }
   }
 
@@ -617,13 +672,14 @@ class DropP2pPlugin {
     json << "{\"t\":\"ap\",\"ssid\":\"" << ssid_ << "\",\"psk\":\"" << psk_
          << "\",\"ip\":\"" << HotspotIp() << "\",\"port\":" << http_port_
          << "}";
-    NotifyLink(json.str());
+    last_offer_ = json.str();
+    NotifyLink(last_offer_);
   }
 
   void NotifyLink(const std::string& json) {
     try {
       if (link_) {
-        link_.NotifyValueAsync(BytesToBuffer(json));
+        link_.NotifyValueAsync(BytesToBuffer(PadLinkJson(json)));
       }
     } catch (...) {
     }
@@ -659,6 +715,35 @@ class DropP2pPlugin {
         return;
       }
       auto service = services.Services().GetAt(0);
+      wgatt::GattCharacteristic info_char{nullptr};
+      try {
+        auto infos = service.GetCharacteristicsForUuidAsync(kInfoUuid).get();
+        if (infos.Characteristics().Size() > 0) {
+          info_char = infos.Characteristics().GetAt(0);
+          auto read =
+              info_char.ReadValueAsync(wble::BluetoothCacheMode::Uncached).get();
+          if (read.Status() == wgatt::GattCommunicationStatus::Success) {
+            auto bytes = BufferBytes(read.Value());
+            const std::string info = BytesToString(bytes.data(), bytes.size());
+            const auto lan = JsonGet(info, "lan");
+            if (SameLan24(LanIpv4(), lan)) {
+              int port = http_port_;
+              try {
+                port = std::stoi(JsonGet(info, "port"));
+              } catch (...) {
+              }
+              PostUi([res = result.release(), lan, port]() mutable {
+                MethodResult(res)->Success(EncodableValue(EncodableMap{
+                    {EncodableValue("host"), EncodableValue(lan)},
+                    {EncodableValue("port"), EncodableValue(port)},
+                }));
+              });
+              return;
+            }
+          }
+        }
+      } catch (...) {
+      }
       auto chars = service.GetCharacteristicsForUuidAsync(kLinkUuid).get();
       if (chars.Characteristics().Size() == 0) {
         PostUi([res = result.release()]() {
@@ -668,29 +753,96 @@ class DropP2pPlugin {
       }
       client_link_ = chars.Characteristics().GetAt(0);
       pending_connect_ = std::move(result);
-      client_link_.WriteClientCharacteristicConfigurationDescriptorAsync(
-          wgatt::GattClientCharacteristicConfigurationDescriptorValue::Notify)
-          .get();
+      join_started_ = false;
+      swap_started_ = false;
+      try {
+        client_link_.WriteClientCharacteristicConfigurationDescriptorAsync(
+            wgatt::GattClientCharacteristicConfigurationDescriptorValue::Notify)
+            .get();
+      } catch (...) {
+      }
       client_link_.ValueChanged(
           [this](auto&&, wgatt::GattValueChangedEventArgs const& args) {
             auto bytes = BufferBytes(args.CharacteristicValue());
-            const std::string json = BytesToString(bytes.data(), bytes.size());
-            const auto type = JsonGet(json, "t");
-            if (type == "ap") {
-              JoinAp(JsonGet(json, "ssid"), JsonGet(json, "psk"),
-                     JsonGet(json, "ip"), JsonGet(json, "port"));
-            } else if (type == "err") {
-              FailConnect("The other device could not open Wi-Fi");
-            }
+            ApplyOffer(BytesToString(bytes.data(), bytes.size()));
           });
       client_link_.WriteValueAsync(BytesToBuffer("{\"t\":\"host\"}")).get();
+      for (int i = 0; i < 80 && pending_connect_; i++) {
+        Sleep(500);
+        if (!info_char) continue;
+        try {
+          auto read =
+              info_char.ReadValueAsync(wble::BluetoothCacheMode::Uncached).get();
+          if (read.Status() == wgatt::GattCommunicationStatus::Success) {
+            auto bytes = BufferBytes(read.Value());
+            ApplyOffer(BytesToString(bytes.data(), bytes.size()));
+          }
+        } catch (...) {
+        }
+      }
+      if (pending_connect_) {
+        FailConnect("Could not reach them nearby");
+      }
     } catch (...) {
       FailConnect("Could not reach them nearby");
     }
   }
 
+  void ApplyOffer(const std::string& json) {
+    const auto type = JsonGet(json, "t");
+    if (type == "ap") {
+      JoinAp(JsonGet(json, "ssid"), JsonGet(json, "psk"), JsonGet(json, "ip"),
+             JsonGet(json, "port"));
+    } else if (type == "swap") {
+      if (swap_started_) return;
+      swap_started_ = true;
+      try {
+        StartAp();
+        WriteApToPeer();
+      } catch (...) {
+        FailConnect("Could not open the private Wi-Fi");
+      }
+    } else if (type == "ready") {
+      int port = http_port_;
+      try {
+        const auto text = JsonGet(json, "port");
+        if (!text.empty()) port = std::stoi(text);
+      } catch (...) {
+      }
+      auto ip = JsonGet(json, "ip");
+      if (ip.empty()) ip = "192.168.49.1";
+      SucceedConnect(ip, port);
+    } else if (type == "err") {
+      FailConnect("The other device could not open Wi-Fi");
+    }
+  }
+
+  void WriteApToPeer() {
+    if (!client_link_) return;
+    std::ostringstream json;
+    json << "{\"t\":\"ap\",\"ssid\":\"" << ssid_ << "\",\"psk\":\"" << psk_
+         << "\",\"ip\":\"" << HotspotIp() << "\",\"port\":" << http_port_
+         << "}";
+    try {
+      client_link_.WriteValueAsync(BytesToBuffer(PadLinkJson(json.str())));
+    } catch (...) {
+    }
+  }
+
+  void JoinApAsReceiver(const std::string& ssid, const std::string& psk) {
+    if (ssid.empty() || psk.empty()) return;
+    if (!WlanJoin(ssid, psk)) return;
+    joined_ssid_ = ssid;
+    std::ostringstream json;
+    json << "{\"t\":\"ready\",\"ip\":\"" << HotspotIp()
+         << "\",\"port\":" << http_port_ << "}";
+    last_offer_ = json.str();
+    NotifyLink(last_offer_);
+  }
+
   void JoinAp(const std::string& ssid, const std::string& psk,
               const std::string& ip, const std::string& port_text) {
+    if (join_started_) return;
     int port = 0;
     try {
       port = std::stoi(port_text);
@@ -701,6 +853,7 @@ class DropP2pPlugin {
       FailConnect("The other device could not open Wi-Fi");
       return;
     }
+    join_started_ = true;
     if (!WlanJoin(ssid, psk)) {
       FailConnect("Could not join the private Wi-Fi");
       return;
@@ -867,6 +1020,9 @@ class DropP2pPlugin {
   std::string joined_ssid_;
   std::string ssid_;
   std::string psk_;
+  std::string last_offer_;
+  bool join_started_ = false;
+  bool swap_started_ = false;
 
   std::atomic<int> advertise_status_{0};
   std::atomic<bool> advertise_extended_{false};

@@ -625,7 +625,7 @@ class DropService {
             phase: DropSendPhase.waiting,
             peerName: peer.name,
             fraction: 0,
-            label: 'Opening a private Wi-Fi link…',
+            label: 'Reaching them nearby…',
           ),
           force: true,
         );

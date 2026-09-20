@@ -52,6 +52,10 @@ import java.util.concurrent.ConcurrentHashMap
  * BLE discovery plus a short-lived local Wi-Fi AP for One Drop when there is
  * no shared LAN. Receiver hosts [WifiManager.startLocalOnlyHotspot]; sender
  * joins with [WifiNetworkSpecifier] and binds HTTP to that network.
+ *
+ * Fire OS cannot read `/proc/net/arp` and cannot host a SoftAP. Same-Wi-Fi
+ * sends read the peer's LAN IPv4 from the GATT INFO characteristic. If the
+ * receiver cannot host, it asks the sender to host and then joins.
  */
 object OneDropP2p {
     const val CHANNEL = "one.aml.onedrop/p2p"
@@ -62,8 +66,12 @@ object OneDropP2p {
     private const val DUTY_SCAN_MS = 1_500L
     private const val FRESH_SIGHTING_MS = 2_000L
     private const val WAIT_FOR_PEER_MS = 10_000L
+    private const val INCOMING_GATT_MS = 45_000L
     private const val COMPANY = 0x0A11
     private const val COMPANY_NAME = 0x0A12
+    // Beacon flag bit 6: peer has the send UI open. Idle listen stays
+    // non-connectable so Windows Add-a-device does not list nameless Unknowns.
+    private const val SESSION_FLAG = 0x40
     private const val PREF_PEER = "beaconPeerId"
     private const val PREF_NAME = "beaconName"
     private const val PREF_PORT = "beaconPort"
@@ -111,9 +119,21 @@ object OneDropP2p {
     private var connectDevice: BluetoothDevice? = null
     private var connectAttempt = 0
     private var gattLinked = false
+    private var infoRead = false
+    private var hostWritten = false
+    private var boundForHotspot = false
+    private var joinStarted = false
+    private var swapStarted = false
+    private var linkOffer: JSONObject? = null
     private var radioPausedForConnect = false
     private var gattServerHeldOff = false
     private var gattServiceRetry = false
+    private var incomingGattUntil = 0L
+    private val dropIncomingGatt = Runnable {
+        if (!dartSession && running && !radioHeldForCamera && !radioPausedForConnect) {
+            bluetoothAdapter()?.let { startAdvertise(it) }
+        }
+    }
     private var lastConnectNote = ""
     private var lastGattStatus: Int? = null
     private var lastGattServerStatus: Int? = null
@@ -129,6 +149,7 @@ object OneDropP2p {
     private var dutyRunning = false
     private var dutyAdvertisePhase = true
     private val dutyTick = Runnable { tickDutyCycle() }
+    private val offerPoll = Runnable { pollLinkOffer() }
 
     fun attach(engine: FlutterEngine, context: Context) {
         app = context.applicationContext
@@ -445,6 +466,7 @@ object OneDropP2p {
             "sdk" to Build.VERSION.SDK_INT,
             "running" to running,
             "dartSession" to dartSession,
+            "advertiseConnectable" to wantsIncomingGatt(),
             "advertiseStarted" to advertiseStarted,
             "scanStarted" to scanStarted,
             "bluetoothOn" to (adapter?.isEnabled == true),
@@ -468,6 +490,9 @@ object OneDropP2p {
             "lastGattServer" to lastGattServerStatus,
             "gattServer" to (gattServer != null),
             "weakRadio" to weakRadio(),
+            "amazonRadio" to amazonRadio(),
+            "canHostHotspot" to !cannotHostHotspot(),
+            "lanIpv4" to lanIpv4(),
             "dutyPhase" to when {
                 !dutyRunning -> "off"
                 dutyAdvertisePhase -> "advertise"
@@ -481,10 +506,10 @@ object OneDropP2p {
     /// Fire OS, ColorOS, Xiaomi, and most API 30 radios cannot scan, advertise,
     /// and be a GATT central/peripheral at once. Time-slice discovery there.
     private fun weakRadio(): Boolean {
+        if (amazonRadio()) return true
         val mfr = Build.MANUFACTURER.lowercase()
         val brand = Build.BRAND.lowercase()
-        return mfr == "amazon" ||
-            Build.VERSION.SDK_INT < 31 ||
+        return Build.VERSION.SDK_INT < 31 ||
             mfr == "oppo" ||
             mfr == "oneplus" ||
             mfr == "realme" ||
@@ -495,6 +520,23 @@ object OneDropP2p {
             brand.contains("xiaomi") ||
             brand == "redmi" ||
             brand == "poco"
+    }
+
+    /// Fire tablets ship without SoftAP / tethering. LocalOnlyHotspot fails
+    /// immediately; they can still *join* a phone-hosted private AP.
+    private fun amazonRadio(): Boolean {
+        val mfr = Build.MANUFACTURER.lowercase()
+        val brand = Build.BRAND.lowercase()
+        val product = Build.PRODUCT.lowercase()
+        val model = Build.MODEL.lowercase()
+        return mfr == "amazon" ||
+            brand == "amazon" ||
+            product.contains("fire") ||
+            model.startsWith("kf")
+    }
+
+    private fun cannotHostHotspot(): Boolean {
+        return amazonRadio() || Build.VERSION.SDK_INT < 29
     }
 
     private fun bluetoothAdapter(): BluetoothAdapter? {
@@ -626,6 +668,7 @@ object OneDropP2p {
         linkChar = BluetoothGattCharacteristic(
             LINK_UUID,
             BluetoothGattCharacteristic.PROPERTY_WRITE or
+                BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE or
                 BluetoothGattCharacteristic.PROPERTY_NOTIFY,
             BluetoothGattCharacteristic.PERMISSION_WRITE,
         )
@@ -641,6 +684,20 @@ object OneDropP2p {
         gattServer?.addService(service)
     }
 
+    private fun wantsIncomingGatt(): Boolean {
+        return dartSession || System.currentTimeMillis() < incomingGattUntil
+    }
+
+    private fun noteSenderSession() {
+        val now = System.currentTimeMillis()
+        val was = wantsIncomingGatt()
+        incomingGattUntil = now + INCOMING_GATT_MS
+        main.removeCallbacks(dropIncomingGatt)
+        main.postDelayed(dropIncomingGatt, INCOMING_GATT_MS)
+        if (was || radioPausedForConnect || radioHeldForCamera || !running) return
+        bluetoothAdapter()?.let { startAdvertise(it) }
+    }
+
     @SuppressLint("MissingPermission")
     private fun startAdvertise(adapter: BluetoothAdapter) {
         if (beacon.isEmpty()) {
@@ -652,8 +709,9 @@ object OneDropP2p {
         } else {
             AdvertiseSettings.ADVERTISE_MODE_LOW_POWER
         }
+        val connectable = wantsIncomingGatt()
         val key =
-            "$peerId|$httpPort|$advertiseMode|$advertiseCompact|${beacon.contentHashCode()}|${nameBytes.contentHashCode()}"
+            "$peerId|$httpPort|$advertiseMode|$connectable|$advertiseCompact|${beacon.contentHashCode()}|${nameBytes.contentHashCode()}"
         if (advertiseStarted && advertisedKey == key) return
         if (advertiseStarted) {
             try {
@@ -675,14 +733,18 @@ object OneDropP2p {
                     AdvertiseSettings.ADVERTISE_TX_POWER_LOW
                 },
             )
-            .setConnectable(true)
+            .setConnectable(connectable)
             .setTimeout(0)
             .build()
         val payload = if (advertiseCompact && nameBytes.isNotEmpty()) {
             beacon + nameBytes
         } else {
-            beacon
+            beacon.copyOf()
         }
+        if (dartSession && payload.size > 3) {
+            payload[3] = (payload[3].toInt() or SESSION_FLAG).toByte()
+        }
+        Log.i(TAG, "advertise connectable=$connectable session=$dartSession bytes=${payload.size}")
         val data = AdvertiseData.Builder()
             .setIncludeDeviceName(false)
             .addManufacturerData(COMPANY, payload)
@@ -767,7 +829,10 @@ object OneDropP2p {
         stopHotspot()
         if (OneDropListenService.isRunning()) {
             val adapter = bluetoothAdapter()
-            if (adapter != null && !radioHeldForCamera) startScan(adapter)
+            if (adapter != null && !radioHeldForCamera) {
+                startAdvertise(adapter)
+                startScan(adapter)
+            }
             return
         }
         stopFully()
@@ -779,6 +844,8 @@ object OneDropP2p {
         dartSession = false
         scanHard = false
         radioHeldForCamera = false
+        incomingGattUntil = 0L
+        main.removeCallbacks(dropIncomingGatt)
         teardownClient()
         stopHotspot()
         pauseDiscovery()
@@ -817,6 +884,11 @@ object OneDropP2p {
         connectDevice = device
         connectAttempt = 0
         gattLinked = false
+        infoRead = false
+        hostWritten = false
+        boundForHotspot = false
+        joinStarted = false
+        swapStarted = false
         lastGattStatus = null
         val gen = ++connectGen
         main.postDelayed({
@@ -824,7 +896,7 @@ object OneDropP2p {
                 lastConnectNote = "timeout gatt=${lastGattStatus ?: "none"} try=$connectAttempt"
                 failConnect("Could not reach them nearby")
             }
-        }, 40_000)
+        }, 55_000)
         val age = System.currentTimeMillis() - (deviceSeenAt[id] ?: 0L)
         if (age in 0 until FRESH_SIGHTING_MS) {
             lastConnectNote = "fresh sighting ${age}ms — connecting ${device.address}"
@@ -994,6 +1066,9 @@ object OneDropP2p {
         pendingConnect = null
         waitingConnectId = null
         connectDevice = null
+        hostWritten = false
+        infoRead = false
+        main.removeCallbacks(offerPoll)
         try {
             activeGatt?.close()
         } catch (_: Exception) {
@@ -1017,7 +1092,18 @@ object OneDropP2p {
         pendingConnect = null
         waitingConnectId = null
         connectDevice = null
+        hostWritten = false
+        infoRead = false
+        main.removeCallbacks(offerPoll)
         lastConnectNote = "linked $host:$port"
+        if (!boundForHotspot) {
+            try {
+                activeGatt?.close()
+            } catch (_: Exception) {
+            }
+            activeGatt = null
+            resumeAfterConnect()
+        }
         try {
             pending.success(mapOf("host" to host, "port" to port))
         } catch (_: Exception) {
@@ -1055,21 +1141,7 @@ object OneDropP2p {
             }, 400)
         }
         activeGatt = null
-        val ctx = app
-        val cm = ctx?.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
-        try {
-            cm?.bindProcessToNetwork(null)
-        } catch (_: Exception) {
-        }
-        boundNetwork = null
-        val callback = joinCallback
-        joinCallback = null
-        if (callback != null) {
-            try {
-                cm?.unregisterNetworkCallback(callback)
-            } catch (_: Exception) {
-            }
-        }
+        releaseJoin()
         try {
             activeGatt?.close()
         } catch (_: Exception) {
@@ -1078,16 +1150,43 @@ object OneDropP2p {
         resumeAfterConnect()
     }
 
+    private fun releaseJoin() {
+        val ctx = app
+        val cm = ctx?.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+        try {
+            cm?.bindProcessToNetwork(null)
+        } catch (_: Exception) {
+        }
+        boundNetwork = null
+        boundForHotspot = false
+        val callback = joinCallback
+        joinCallback = null
+        if (callback != null) {
+            try {
+                cm?.unregisterNetworkCallback(callback)
+            } catch (_: Exception) {
+            }
+        }
+    }
+
     private fun stopHotspot() {
         try {
             hotspot?.close()
         } catch (_: Exception) {
         }
         hotspot = null
+        if (linkOffer?.optString("t") == "ap") {
+            linkOffer = null
+        }
     }
 
     @SuppressLint("MissingPermission")
     private fun handleHostRequest(device: BluetoothDevice) {
+        if (cannotHostHotspot()) {
+            lastConnectNote = "this device cannot host a private AP — asking peer"
+            offerSwap(device)
+            return
+        }
         val ctx = app ?: return
         val wifi = ctx.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
         if (hotspot != null) {
@@ -1103,20 +1202,34 @@ object OneDropP2p {
                     }
 
                     override fun onFailed(reason: Int) {
-                        notifyLink(device, JSONObject().put("t", "err").put("m", "wifi").toString())
+                        lastConnectNote = "hotspot failed reason=$reason — swap"
+                        Log.w(TAG, lastConnectNote)
+                        offerSwap(device)
                     }
                 },
                 main,
             )
         } catch (error: Exception) {
             Log.w(TAG, "hotspot", error)
-            notifyLink(device, JSONObject().put("t", "err").put("m", "wifi").toString())
+            offerSwap(device)
         }
+    }
+
+    private fun offerSwap(device: BluetoothDevice) {
+        val json = JSONObject().put("t", "swap")
+        linkOffer = json
+        notifyLink(device, json)
     }
 
     @SuppressLint("MissingPermission")
     private fun notifyAp(device: BluetoothDevice) {
-        val reservation = hotspot ?: return
+        val json = apJson() ?: return
+        linkOffer = json
+        notifyLink(device, json)
+    }
+
+    private fun apJson(): JSONObject? {
+        val reservation = hotspot ?: return null
         var ssid = ""
         var psk = ""
         try {
@@ -1133,20 +1246,19 @@ object OneDropP2p {
             ssid = conf?.SSID?.trim('"').orEmpty()
             psk = conf?.preSharedKey.orEmpty()
         }
-        val ip = hotspotGateway()
-        val json = JSONObject()
+        if (ssid.isEmpty() || psk.isEmpty()) return null
+        return JSONObject()
             .put("t", "ap")
             .put("ssid", ssid)
             .put("psk", psk)
-            .put("ip", ip)
+            .put("ip", hotspotGateway())
             .put("port", httpPort)
-        notifyLink(device, json.toString())
     }
 
     @SuppressLint("MissingPermission")
-    private fun notifyLink(device: BluetoothDevice, json: String) {
+    private fun notifyLink(device: BluetoothDevice, json: JSONObject) {
         val characteristic = linkChar ?: return
-        val bytes = json.toByteArray(Charsets.UTF_8)
+        val bytes = linkJsonBytes(json)
         characteristic.value = bytes
         if (Build.VERSION.SDK_INT >= 33) {
             gattServer?.notifyCharacteristicChanged(device, characteristic, false, bytes)
@@ -1154,6 +1266,23 @@ object OneDropP2p {
             @Suppress("DEPRECATION")
             gattServer?.notifyCharacteristicChanged(device, characteristic, false)
         }
+    }
+
+    /// ColorOS HID filter drops exactly 22-byte GATT notifies
+    /// (`{"t":"err","m":"wifi"}`). Pad so the stack delivers them.
+    private fun linkJsonBytes(json: JSONObject): ByteArray {
+        var n = 0
+        var bytes = json.toString().toByteArray(Charsets.UTF_8)
+        while (bytes.size == 22 && n < 4) {
+            json.put("z", n)
+            bytes = json.toString().toByteArray(Charsets.UTF_8)
+            n++
+        }
+        if (bytes.size < 24) {
+            json.put("z", 1)
+            bytes = json.toString().toByteArray(Charsets.UTF_8)
+        }
+        return bytes
     }
 
     private fun hotspotGateway(): String {
@@ -1181,7 +1310,84 @@ object OneDropP2p {
         return apNamed.ifEmpty { "192.168.49.1" }
     }
 
-    private fun joinAp(ssid: String, psk: String, ip: String, port: Int) {
+    private fun lanIpv4(): String {
+        try {
+            val ifaces = NetworkInterface.getNetworkInterfaces() ?: return ""
+            for (iface in ifaces) {
+                val name = iface.name.lowercase()
+                if (name.contains("rmnet") ||
+                    name.contains("ccmni") ||
+                    name.contains("wwan") ||
+                    name.contains("dummy") ||
+                    name.contains("ap") ||
+                    name.contains("swlan") ||
+                    name.contains("p2p") ||
+                    name == "lo"
+                ) {
+                    continue
+                }
+                val addrs = iface.inetAddresses ?: continue
+                for (addr in addrs) {
+                    if (addr !is Inet4Address || addr.isLoopbackAddress) continue
+                    val ip = addr.hostAddress ?: continue
+                    if (ip.startsWith("169.254.")) continue
+                    if (ip.startsWith("192.168.49.")) continue
+                    if (ip.startsWith("192.168.43.")) continue
+                    if (ip.startsWith("192.168.137.")) continue
+                    if (ip.startsWith("192.168.173.")) continue
+                    if (ip.startsWith("100.")) {
+                        val b = ip.split('.')
+                        val second = b.getOrNull(1)?.toIntOrNull() ?: 0
+                        if (second in 64..127) continue
+                    }
+                    return ip
+                }
+            }
+        } catch (_: Exception) {
+        }
+        return ""
+    }
+
+    private fun sameLan24(a: String, b: String): Boolean {
+        if (a.isEmpty() || b.isEmpty()) return false
+        val left = a.split('.')
+        val right = b.split('.')
+        if (left.size != 4 || right.size != 4) return false
+        return left[0] == right[0] && left[1] == right[1] && left[2] == right[2]
+    }
+
+    private fun ipv4On(network: Network): String {
+        val ctx = app ?: return ""
+        val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            ?: return ""
+        val props = cm.getLinkProperties(network) ?: return ""
+        for (addr in props.linkAddresses) {
+            val inet = addr.address
+            if (inet is Inet4Address && !inet.isLoopbackAddress) {
+                return inet.hostAddress ?: continue
+            }
+        }
+        return ""
+    }
+
+    private fun lanReachable(host: String, port: Int): Boolean {
+        return try {
+            java.net.Socket().use { socket ->
+                socket.connect(java.net.InetSocketAddress(host, port), 900)
+                true
+            }
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun joinAp(
+        ssid: String,
+        psk: String,
+        ip: String,
+        port: Int,
+        readyTo: BluetoothDevice? = null,
+    ) {
         val ctx = app ?: return failConnect("Gallery is not open")
         if (ssid.isEmpty() || psk.isEmpty()) {
             failConnect("The other device could not open Wi-Fi")
@@ -1204,20 +1410,38 @@ object OneDropP2p {
         val callback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
                 boundNetwork = network
+                boundForHotspot = true
                 try {
                     cm.bindProcessToNetwork(network)
                 } catch (_: Exception) {
                 }
-                main.post { succeedConnect(ip, port) }
+                main.post {
+                    if (readyTo != null) {
+                        val mine = ipv4On(network).ifBlank { ip }
+                        val json = JSONObject()
+                            .put("t", "ready")
+                            .put("ip", mine)
+                            .put("port", httpPort)
+                        linkOffer = json
+                        notifyLink(readyTo, json)
+                        return@post
+                    }
+                    succeedConnect(ip, port)
+                }
             }
 
             override fun onUnavailable() {
-                main.post { failConnect("Could not join the private Wi-Fi") }
+                main.post {
+                    if (pendingConnect != null) {
+                        failConnect("Could not join the private Wi-Fi")
+                    }
+                }
             }
         }
         joinCallback = callback
+        val waitMs = if (amazonRadio()) 35_000 else 25_000
         try {
-            cm.requestNetwork(request, callback, 20_000)
+            cm.requestNetwork(request, callback, waitMs)
         } catch (error: Exception) {
             failConnect(error.message ?: "Wi-Fi join failed")
         }
@@ -1324,6 +1548,9 @@ object OneDropP2p {
         val name = record.getManufacturerSpecificData(COMPANY_NAME)
             ?: record.deviceName?.toByteArray(Charsets.UTF_8)
         val sighting = parseBeacon(beacon, name) ?: return
+        if (beacon != null && beacon.size > 3 && (beacon[3].toInt() and SESSION_FLAG) != 0) {
+            main.post { noteSenderSession() }
+        }
         devices[sighting.id] = result.device
         deviceSeenAt[sighting.id] = System.currentTimeMillis()
         val waiting = waitingConnectId
@@ -1406,13 +1633,15 @@ object OneDropP2p {
                 gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_FAILURE, 0, null)
                 return
             }
-            val json = JSONObject()
+            val payload = JSONObject()
                 .put("v", 1)
                 .put("peerId", peerId)
                 .put("name", displayName)
                 .put("port", httpPort)
-                .toString()
-                .toByteArray(Charsets.UTF_8)
+                .put("lan", lanIpv4())
+                .put("canHost", !cannotHostHotspot())
+            linkOffer?.let { payload.put("offer", it) }
+            val json = payload.toString().toByteArray(Charsets.UTF_8)
             val slice = if (offset >= json.size) ByteArray(0) else json.copyOfRange(offset, json.size)
             gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, slice)
         }
@@ -1434,7 +1663,20 @@ object OneDropP2p {
             val type = runCatching { JSONObject(text).optString("t") }.getOrDefault("")
             when (type) {
                 "host" -> main.post { handleHostRequest(device) }
-                "done" -> main.post { stopHotspot() }
+                "ap" -> main.post {
+                    val json = runCatching { JSONObject(text) }.getOrNull() ?: return@post
+                    joinAp(
+                        json.optString("ssid"),
+                        json.optString("psk"),
+                        json.optString("ip").ifBlank { "192.168.49.1" },
+                        json.optInt("port", httpPort),
+                        readyTo = device,
+                    )
+                }
+                "done" -> main.post {
+                    stopHotspot()
+                    releaseJoin()
+                }
             }
         }
 
@@ -1485,12 +1727,31 @@ object OneDropP2p {
                     gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
                 } catch (_: Exception) {
                 }
+                try {
+                    gatt.requestMtu(185)
+                } catch (_: Exception) {
+                }
                 gatt.discoverServices()
+                val gen = connectGen
+                main.postDelayed({
+                    if (gen != connectGen || pendingConnect == null || infoRead || hostWritten) {
+                        return@postDelayed
+                    }
+                    lastConnectNote = "discover stall — retry"
+                    try {
+                        gatt.discoverServices()
+                    } catch (_: Exception) {
+                    }
+                }, 6_000)
                 return
             }
             if (newState == BluetoothProfile.STATE_DISCONNECTED && pendingConnect != null) {
                 retryGattOrFail(gatt, status)
             }
+        }
+
+        override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
+            lastConnectNote = "mtu=$mtu status=$status"
         }
 
         @SuppressLint("MissingPermission")
@@ -1501,27 +1762,38 @@ object OneDropP2p {
                 main.post { failConnect("That device is not ready for One Drop") }
                 return
             }
-            val service = gatt.getService(SERVICE_UUID)
-            val link = service?.getCharacteristic(LINK_UUID)
-            if (link == null) {
-                main.post { failConnect("That device is not ready for One Drop") }
-                return
-            }
-            gatt.setCharacteristicNotification(link, true)
-            val cccd = link.getDescriptor(CCCD_UUID)
-            if (cccd != null) {
-                val enabled = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-                val wrote = if (Build.VERSION.SDK_INT >= 33) {
-                    gatt.writeDescriptor(cccd, enabled) == BluetoothGatt.GATT_SUCCESS
-                } else {
-                    @Suppress("DEPRECATION")
-                    cccd.value = enabled
-                    @Suppress("DEPRECATION")
-                    gatt.writeDescriptor(cccd)
+            readPeerInfo(gatt)
+            val gen = connectGen
+            main.postDelayed({
+                if (gen != connectGen || pendingConnect == null || infoRead || hostWritten) {
+                    return@postDelayed
                 }
-                if (wrote) return
+                subscribeAndAskHost(gatt)
+            }, 2_400)
+        }
+
+        @SuppressLint("MissingPermission")
+        override fun onCharacteristicRead(
+            gatt: BluetoothGatt,
+            characteristic: BluetoothGattCharacteristic,
+            value: ByteArray,
+            status: Int,
+        ) {
+            if (status == BluetoothGatt.GATT_SUCCESS) {
+                handleInfoBytes(gatt, value)
             }
-            writeHost(gatt, link)
+        }
+
+        @Deprecated("Older Android")
+        @SuppressLint("MissingPermission")
+        override fun onCharacteristicRead(
+            gatt: BluetoothGatt,
+            characteristic: BluetoothGattCharacteristic,
+            status: Int,
+        ) {
+            if (status != BluetoothGatt.GATT_SUCCESS) return
+            @Suppress("DEPRECATION")
+            handleInfoBytes(gatt, characteristic.value ?: return)
         }
 
         @SuppressLint("MissingPermission")
@@ -1530,25 +1802,8 @@ object OneDropP2p {
             descriptor: BluetoothGattDescriptor,
             status: Int,
         ) {
-            val link = gatt.getService(SERVICE_UUID)?.getCharacteristic(LINK_UUID) ?: return
-            writeHost(gatt, link)
-        }
-
-        @SuppressLint("MissingPermission")
-        private fun writeHost(gatt: BluetoothGatt, link: BluetoothGattCharacteristic) {
-            val payload = JSONObject().put("t", "host").toString().toByteArray(Charsets.UTF_8)
-            if (Build.VERSION.SDK_INT >= 33) {
-                gatt.writeCharacteristic(
-                    link,
-                    payload,
-                    BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT,
-                )
-            } else {
-                @Suppress("DEPRECATION")
-                link.value = payload
-                @Suppress("DEPRECATION")
-                gatt.writeCharacteristic(link)
-            }
+            lastConnectNote = "cccd status=$status"
+            writeHostCommand(gatt)
         }
 
         override fun onCharacteristicChanged(
@@ -1556,7 +1811,7 @@ object OneDropP2p {
             characteristic: BluetoothGattCharacteristic,
             value: ByteArray,
         ) {
-            onLinkNotify(value)
+            applyLinkOffer(runCatching { JSONObject(String(value, Charsets.UTF_8)) }.getOrNull() ?: return)
         }
 
         @Deprecated("Older Android")
@@ -1565,25 +1820,228 @@ object OneDropP2p {
             characteristic: BluetoothGattCharacteristic,
         ) {
             @Suppress("DEPRECATION")
-            onLinkNotify(characteristic.value ?: return)
+            val value = characteristic.value ?: return
+            applyLinkOffer(runCatching { JSONObject(String(value, Charsets.UTF_8)) }.getOrNull() ?: return)
         }
+    }
 
-        private fun onLinkNotify(value: ByteArray) {
-            val json = runCatching { JSONObject(String(value, Charsets.UTF_8)) }.getOrNull() ?: return
-            when (json.optString("t")) {
-                "ap" -> main.post {
-                    joinAp(
-                        json.optString("ssid"),
-                        json.optString("psk"),
-                        json.optString("ip").ifBlank { "192.168.49.1" },
-                        json.optInt("port", httpPort),
-                    )
+    @SuppressLint("MissingPermission")
+    private fun readPeerInfo(gatt: BluetoothGatt) {
+        val info = gatt.getService(SERVICE_UUID)?.getCharacteristic(INFO_UUID)
+        if (info == null) {
+            subscribeAndAskHost(gatt)
+            return
+        }
+        try {
+            gatt.readCharacteristic(info)
+        } catch (_: Exception) {
+            subscribeAndAskHost(gatt)
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun handleInfoBytes(gatt: BluetoothGatt, value: ByteArray) {
+        val json = runCatching { JSONObject(String(value, Charsets.UTF_8)) }.getOrNull() ?: return
+        val offer = json.optJSONObject("offer")
+        if (offer != null) {
+            applyLinkOffer(offer)
+            if (pendingConnect == null) return
+        }
+        if (infoRead && hostWritten) return
+        infoRead = true
+        val lan = json.optString("lan").trim()
+        val port = json.optInt("port", httpPort)
+        val mine = lanIpv4()
+        if (!joinStarted &&
+            !swapStarted &&
+            lan.isNotEmpty() &&
+            sameLan24(mine, lan) &&
+            port > 0
+        ) {
+            lastConnectNote = "probing LAN $lan:$port"
+            val gen = connectGen
+            Thread {
+                val ok = lanReachable(lan, port)
+                main.post {
+                    if (gen != connectGen || pendingConnect == null) return@post
+                    if (ok && !joinStarted && !swapStarted) {
+                        lastConnectNote = "same LAN $lan — skip hotspot"
+                        Log.i(TAG, lastConnectNote)
+                        succeedConnect(lan, port)
+                    } else {
+                        subscribeAndAskHost(gatt)
+                    }
                 }
-                "err" -> main.post {
-                    failConnect("The other device could not open Wi-Fi")
+            }.start()
+            return
+        }
+        subscribeAndAskHost(gatt)
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun subscribeAndAskHost(gatt: BluetoothGatt) {
+        if (hostWritten || pendingConnect == null) return
+        val link = gatt.getService(SERVICE_UUID)?.getCharacteristic(LINK_UUID)
+        if (link == null) {
+            failConnect("That device is not ready for One Drop")
+            return
+        }
+        try {
+            gatt.setCharacteristicNotification(link, true)
+        } catch (_: Exception) {
+        }
+        val cccd = link.getDescriptor(CCCD_UUID)
+        var wrote = false
+        if (cccd != null) {
+            val enabled = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+            wrote = try {
+                if (Build.VERSION.SDK_INT >= 33) {
+                    gatt.writeDescriptor(cccd, enabled) == BluetoothGatt.GATT_SUCCESS
+                } else {
+                    @Suppress("DEPRECATION")
+                    cccd.value = enabled
+                    @Suppress("DEPRECATION")
+                    gatt.writeDescriptor(cccd)
                 }
+            } catch (_: Exception) {
+                false
             }
         }
+        val gen = connectGen
+        // Fire OS often never fires onDescriptorWrite. Do not wait forever.
+        main.postDelayed({
+            if (gen != connectGen || pendingConnect == null || hostWritten) return@postDelayed
+            lastConnectNote = "cccd silent — write host anyway"
+            Log.w(TAG, lastConnectNote)
+            writeHostCommand(gatt)
+        }, if (wrote) 1_600 else 200)
+        if (!wrote) writeHostCommand(gatt)
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun writeHostCommand(gatt: BluetoothGatt) {
+        if (hostWritten || pendingConnect == null) return
+        val link = gatt.getService(SERVICE_UUID)?.getCharacteristic(LINK_UUID) ?: return
+        hostWritten = true
+        lastConnectNote = "write host"
+        writeLinkJson(gatt, link, JSONObject().put("t", "host"))
+        main.removeCallbacks(offerPoll)
+        main.post(offerPoll)
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun writeLinkJson(
+        gatt: BluetoothGatt,
+        link: BluetoothGattCharacteristic,
+        json: JSONObject,
+    ) {
+        val payload = linkJsonBytes(json)
+        try {
+            if (Build.VERSION.SDK_INT >= 33) {
+                gatt.writeCharacteristic(
+                    link,
+                    payload,
+                    BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE,
+                )
+            } else {
+                @Suppress("DEPRECATION")
+                link.value = payload
+                @Suppress("DEPRECATION")
+                link.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+                @Suppress("DEPRECATION")
+                gatt.writeCharacteristic(link)
+            }
+        } catch (error: Exception) {
+            Log.w(TAG, "write link", error)
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun pollLinkOffer() {
+        if (pendingConnect == null) return
+        val gatt = activeGatt ?: return
+        val info = gatt.getService(SERVICE_UUID)?.getCharacteristic(INFO_UUID)
+        if (info != null) {
+            try {
+                gatt.readCharacteristic(info)
+            } catch (_: Exception) {
+            }
+        }
+        main.postDelayed(offerPoll, 450)
+    }
+
+    private fun applyLinkOffer(json: JSONObject) {
+        when (json.optString("t")) {
+            "ap" -> main.post {
+                if (joinStarted) return@post
+                joinStarted = true
+                joinAp(
+                    json.optString("ssid"),
+                    json.optString("psk"),
+                    json.optString("ip").ifBlank { "192.168.49.1" },
+                    json.optInt("port", httpPort),
+                )
+            }
+            "swap" -> main.post {
+                if (swapStarted) return@post
+                swapStarted = true
+                hostApForPeer()
+            }
+            "ready" -> main.post {
+                succeedConnect(
+                    json.optString("ip").ifBlank { "192.168.49.1" },
+                    json.optInt("port", httpPort),
+                )
+            }
+            "err" -> main.post {
+                failConnect("The other device could not open Wi-Fi")
+            }
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun hostApForPeer() {
+        if (cannotHostHotspot()) {
+            failConnect("Neither device can open the private Wi-Fi")
+            return
+        }
+        val ctx = app ?: return failConnect("Gallery is not open")
+        if (hotspot != null) {
+            writeApToPeer()
+            return
+        }
+        val wifi = ctx.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+        try {
+            wifi.startLocalOnlyHotspot(
+                object : WifiManager.LocalOnlyHotspotCallback() {
+                    override fun onStarted(reservation: WifiManager.LocalOnlyHotspotReservation) {
+                        hotspot = reservation
+                        main.postDelayed({ writeApToPeer() }, 400)
+                    }
+
+                    override fun onFailed(reason: Int) {
+                        lastConnectNote = "sender hotspot failed $reason"
+                        failConnect("Could not open the private Wi-Fi")
+                    }
+                },
+                main,
+            )
+        } catch (error: Exception) {
+            Log.w(TAG, "sender hotspot", error)
+            failConnect("Could not open the private Wi-Fi")
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun writeApToPeer() {
+        val gatt = activeGatt ?: return
+        val link = gatt.getService(SERVICE_UUID)?.getCharacteristic(LINK_UUID) ?: return
+        val json = apJson() ?: return failConnect("Could not open the private Wi-Fi")
+        linkOffer = json
+        lastConnectNote = "wrote ap to peer"
+        writeLinkJson(gatt, link, json)
+        main.removeCallbacks(offerPoll)
+        main.post(offerPoll)
     }
 }
 

@@ -205,7 +205,9 @@ Future<List<InternetAddress>> dropLanNeighborIpv4(
   try {
     if (Platform.isAndroid) {
       // `ip neigh` is SELinux-denied for untrusted apps (netlink bind).
-      // /proc/net/arp is readable and is what we actually need.
+      // `/proc/net/arp` is readable on most phones. Fire OS denies that too
+      // (`avc: denied { read } for /proc/.../net/arp`), so neighbor unicast
+      // is empty there — BLE GATT INFO carries the LAN IPv4 instead.
       final arp = await File('/proc/net/arp').readAsString();
       _collectNeighborIps(arp, found);
     } else if (Platform.isWindows) {
@@ -237,6 +239,11 @@ Future<List<InternetAddress>> dropLanNeighborIpv4(
 }
 
 void _collectNeighborIps(String text, Map<String, InternetAddress> out) {
+  dropCollectNeighborIps(text, out);
+}
+
+/// Visible for tests. Parses ARP / `ip neigh` / `arp -a` text.
+void dropCollectNeighborIps(String text, Map<String, InternetAddress> out) {
   for (final match in _ipv4Literal.allMatches(text)) {
     final raw = match.group(1)!;
     if (!_looksLikeIpv4(raw)) continue;

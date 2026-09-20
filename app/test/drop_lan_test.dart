@@ -145,4 +145,16 @@ void main() {
       isFalse,
     );
   });
+
+  test('empty ARP text yields no neighbors (Fire OS denies /proc/net/arp)', () {
+    final found = <String, InternetAddress>{};
+    dropCollectNeighborIps('', found);
+    expect(found, isEmpty);
+    dropCollectNeighborIps(
+      'IP address       HW type     Flags       HW address            Mask     Device\n'
+      '192.168.1.10     0x1         0x2         aa:bb:cc:dd:ee:ff     *        wlan0\n',
+      found,
+    );
+    expect(found['192.168.1.10']?.address, '192.168.1.10');
+  });
 }

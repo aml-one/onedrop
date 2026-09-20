@@ -4,7 +4,10 @@
 
 
 ## Improvements
-
+[improvement] Nearby listen stays off Windows Bluetooth pairing, so it no longer shows as Unknown next to a keyboard
+[improvement] Fire tablets on the same Wi-Fi send over the LAN instead of waiting on a private hotspot
+[improvement] If a tablet cannot host the private Wi-Fi, the other device hosts it and they still send
 
 ## Bug fixes
+[bugfix] Nearby send over Bluetooth finishes on Fire, ColorOS, and HyperOS instead of hanging until it times out
 
