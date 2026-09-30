@@ -14,6 +14,7 @@ import 'core/host.dart';
 import 'core/labels.dart';
 import 'core/nearby_motion.dart';
 import 'core/panel_window.dart';
+import 'core/peer_look.dart';
 import 'screens/file_explorer_screen.dart';
 import 'screens/photo_picker_screen.dart';
 import 'services/air_grab_session.dart';
@@ -801,14 +802,8 @@ class _PeerRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    const accents = [
-      AmlTheme.sky,
-      AmlTheme.mint,
-      AmlTheme.pink,
-      AmlTheme.violet,
-      AmlTheme.amber,
-    ];
-    final accent = accents[peer.id.hashCode.abs() % accents.length];
+    final colors = dropPeerBubbleColors(peer);
+    final accent = colors.last;
     final phone = isPhoneSurface;
     final avatar = phone ? 52.0 : 28.0;
     return Material(
@@ -837,10 +832,7 @@ class _PeerRow extends StatelessWidget {
                     gradient: LinearGradient(
                       begin: Alignment.topLeft,
                       end: Alignment.bottomRight,
-                      colors: [
-                        Color.lerp(Colors.white, accent, 0.25)!,
-                        accent,
-                      ],
+                      colors: colors,
                     ),
                     boxShadow: phone
                         ? [
@@ -881,7 +873,7 @@ class _PeerRow extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      peer.name,
+                      dropPeerDisplayName(peer),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(

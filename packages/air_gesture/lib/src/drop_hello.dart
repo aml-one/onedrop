@@ -12,14 +12,22 @@ AirPeerRole parseAirRole(Object? raw) {
 }
 
 AirPeerOs parseAirOs(Object? raw) {
-  switch ('$raw') {
+  switch ('$raw'.toLowerCase().trim()) {
     case 'android':
       return AirPeerOs.android;
     case 'windows':
+    case 'win':
       return AirPeerOs.windows;
     case 'macos':
+    case 'mac':
       return AirPeerOs.macos;
     case 'linux':
+    case 'aow':
+    case 'aow-os':
+    case 'aowos':
+    case 'aow-os-mobile':
+    case 'aowos-mobile':
+      // Files OneDrop stage treats linux / aow* as AOW OS.
       return AirPeerOs.linux;
     default:
       return AirPeerOs.other;
@@ -50,6 +58,17 @@ String airOsWire(AirPeerOs os) {
     case AirPeerOs.other:
       return 'other';
   }
+}
+
+/// LAN hello `os` for Files / nearby clients. BLE still packs `linux`.
+String airOsHelloWire(
+  AirPeerOs os, {
+  bool aowOs = false,
+  bool aowOsMobile = false,
+}) {
+  if (aowOsMobile) return 'aow-os-mobile';
+  if (aowOs) return 'aow-os';
+  return airOsWire(os);
 }
 
 /// Which AmL app is listening. Gallery is photos only; OneDrop takes files too.

@@ -55,8 +55,17 @@ String dropInitial(String name) {
   return trimmed.substring(0, 1).toUpperCase();
 }
 
-/// Short type for the nearby avatar: Phone, Tablet, PC, Mac, Linux.
+/// Short type for the nearby avatar: Phone, Tablet, PC, Mac, AOW OS,
+/// AOW OS Mobile. Matches the AOW OS Files OneDrop stage (linux / aow*).
 String dropDeviceTypeLabel(DropPeer peer) {
+  final n = peer.name.toLowerCase();
+  final aow = peer.os == AirPeerOs.linux ||
+      n.contains('aow os') ||
+      n.contains('aow-os');
+  final mobile =
+      peer.role == AirPeerRole.phone || peer.role == AirPeerRole.tablet;
+  if (aow && mobile) return 'AOW OS Mobile';
+  if (aow) return 'AOW OS';
   if (peer.role == AirPeerRole.tablet) return 'Tablet';
   switch (peer.os) {
     case AirPeerOs.android:
@@ -64,7 +73,7 @@ String dropDeviceTypeLabel(DropPeer peer) {
     case AirPeerOs.macos:
       return 'Mac';
     case AirPeerOs.linux:
-      return peer.role == AirPeerRole.phone ? 'Phone' : 'Linux';
+      return 'AOW OS';
     case AirPeerOs.windows:
       return 'PC';
     case AirPeerOs.other:

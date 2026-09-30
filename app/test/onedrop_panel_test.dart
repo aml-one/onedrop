@@ -6,6 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:onedrop/core/drop_controller.dart';
 import 'package:onedrop/core/drop_prefs.dart';
 import 'package:onedrop/core/labels.dart';
+import 'package:onedrop/core/peer_look.dart';
 import 'package:onedrop/panel.dart';
 import 'package:onedrop/services/drop_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -75,7 +76,46 @@ void main() {
       dropDeviceTypeLabel(
         peer(role: AirPeerRole.desktop, os: AirPeerOs.linux),
       ),
-      'Linux',
+      'AOW OS',
+    );
+    expect(
+      dropDeviceTypeLabel(
+        peer(role: AirPeerRole.phone, os: AirPeerOs.linux),
+      ),
+      'AOW OS Mobile',
+    );
+    expect(
+      dropDeviceTypeLabel(
+        peer(role: AirPeerRole.tablet, os: AirPeerOs.linux),
+      ),
+      'AOW OS Mobile',
+    );
+  });
+
+  test('nearby names drop (AOW OS)', () {
+    expect(
+      dropPeerDisplayName(
+        DropPeer(
+          id: 'a',
+          name: 'asus (AOW OS)',
+          host: InternetAddress.loopbackIPv4,
+          port: 4071,
+          lastSeen: DateTime.fromMillisecondsSinceEpoch(0),
+        ),
+      ),
+      'asus',
+    );
+    expect(
+      dropPeerDisplayName(
+        DropPeer(
+          id: 'b',
+          name: 'pixel (AOW OS Mobile)',
+          host: InternetAddress.loopbackIPv4,
+          port: 4071,
+          lastSeen: DateTime.fromMillisecondsSinceEpoch(0),
+        ),
+      ),
+      'pixel',
     );
   });
 

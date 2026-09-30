@@ -9,6 +9,7 @@ import '../core/drop_prefs.dart';
 import '../core/labels.dart';
 import '../core/nearby_motion.dart';
 import '../core/panel_window.dart';
+import '../core/peer_look.dart';
 import '../screens/file_explorer_screen.dart';
 import '../screens/photo_picker_screen.dart';
 import '../services/drop_service.dart';
@@ -45,10 +46,14 @@ class PhoneNearbyStage extends StatelessWidget {
 
   Future<void> _sendOrPick(BuildContext context, DropPeer peer) async {
     if (controller.pending.isEmpty) {
-      await _pickPhotos(context);
-      if (controller.pending.isNotEmpty) {
-        unawaited(controller.sendTo(peer));
-      }
+      if (!context.mounted) return;
+      ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+        SnackBar(
+          content: Text(
+            'Pick files first, then tap ${dropPeerDisplayName(peer)}',
+          ),
+        ),
+      );
       return;
     }
     unawaited(controller.sendTo(peer));
@@ -525,7 +530,6 @@ class _DropConstellationState extends State<_DropConstellation>
       top: y - 48,
       child: _OrbitPeer(
         peer: peer,
-        known: DropPrefs.isKnownPeer(peer.id),
         onTap: () => widget.onPeer(peer),
       ),
     );
@@ -795,24 +799,16 @@ class _GlassyDropPainter extends CustomPainter {
 class _OrbitPeer extends StatelessWidget {
   const _OrbitPeer({
     required this.peer,
-    required this.known,
     required this.onTap,
   });
 
   final DropPeer peer;
-  final bool known;
   final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
-    const accents = [
-      AmlTheme.sky,
-      AmlTheme.mint,
-      AmlTheme.pink,
-      AmlTheme.violet,
-      AmlTheme.amber,
-    ];
-    final accent = accents[peer.id.hashCode.abs() % accents.length];
+    final colors = dropPeerBubbleColors(peer);
+    final accent = colors.last;
     return SizedBox(
       width: 80,
       child: Material(
@@ -836,10 +832,7 @@ class _OrbitPeer extends StatelessWidget {
                           gradient: LinearGradient(
                             begin: Alignment.topLeft,
                             end: Alignment.bottomRight,
-                            colors: [
-                              Color.lerp(Colors.white, accent, 0.22)!,
-                              accent,
-                            ],
+                            colors: colors,
                           ),
                           border: Border.all(color: Colors.white, width: 2.5),
                           boxShadow: [
@@ -873,22 +866,12 @@ class _OrbitPeer extends StatelessWidget {
                         ),
                       ),
                     ),
-                    if (known)
-                      const Positioned(
-                        right: -1,
-                        bottom: -1,
-                        child: Icon(
-                          Icons.check_circle_rounded,
-                          size: 16,
-                          color: AmlTheme.mint,
-                        ),
-                      ),
                   ],
                 ),
               ),
               const SizedBox(height: 6),
               Text(
-                peer.name,
+                dropPeerDisplayName(peer),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 textAlign: TextAlign.center,

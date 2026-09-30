@@ -1138,7 +1138,11 @@ class DropService {
         'name': DropPrefs.dropDisplayName,
         'port': _httpPort,
         'role': airRoleWire(localRole),
-        'os': airOsWire(localOs),
+        'os': airOsHelloWire(
+          localOs,
+          aowOs: isAowOs,
+          aowOsMobile: isAowOsMobile,
+        ),
         'camera': _cameraCapable,
         'attention': attentionToWire(_attention),
         'hand': _seesHand,

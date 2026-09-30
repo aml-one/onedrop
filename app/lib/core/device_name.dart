@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'device_channel.dart';
+import 'host.dart';
 
 /// OS host strings that must never be advertised as this device.
 bool isJunkDisplayName(String raw) {
@@ -42,6 +43,8 @@ String fallbackDisplayName() {
     return DeviceChannel.isTabletCached ? 'This tablet' : 'This phone';
   }
   if (Platform.isMacOS) return 'This Mac';
+  if (isAowOsMobile) return 'AOW OS Mobile';
+  if (isAowOs) return 'AOW OS';
   if (Platform.isLinux) return 'This Linux PC';
   return 'This PC';
 }
